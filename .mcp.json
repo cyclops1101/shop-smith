@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "dev-team": {
+      "command": "node",
+      "args": ["/home/cyclops/agentic-dev-team/mcp-server/build/index.js"]
+    }
+  }
+}
