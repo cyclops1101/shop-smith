@@ -65,6 +65,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     // Cut List
     Route::get('/cut-list', [CutListController::class, 'index'])->name('cut-list.index');
+    Route::post('/cut-list/boards', [CutListController::class, 'storeBoard'])->name('cut-list.store-board');
+    Route::delete('/cut-list/boards/{board}', [CutListController::class, 'destroyBoard'])->name('cut-list.destroy-board');
+    Route::post('/cut-list/pieces', [CutListController::class, 'storePiece'])->name('cut-list.store-piece');
+    Route::delete('/cut-list/pieces/{piece}', [CutListController::class, 'destroyPiece'])->name('cut-list.destroy-piece');
     Route::post('/cut-list/optimize', [CutListController::class, 'optimize'])->name('cut-list.optimize');
 });
 
