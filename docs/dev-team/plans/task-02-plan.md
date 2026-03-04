@@ -1,386 +1,214 @@
-# Task 02 Plan: Photo Upload Backend
+# Task 02 Plan: Stock Adjustment Backend
 
 **Task ID:** 02
 **Domain:** backend
-**Feature:** `ProjectController::uploadPhoto()` + `PhotoUploadService`
+**Feature:** `MaterialController::adjustStock()` + `Material` model helpers
 **Status:** pending
 
 ---
 
 ## 1. Approach
 
-Implement photo upload in two layers following the fat-models / thin-controllers / dedicated-service-class convention from CLAUDE.md.
+Two targeted changes following the project's fat-models / thin-controllers convention:
 
-1. **`PhotoUploadService`** — a dedicated service class at `app/Services/PhotoUploadService.php` that encapsulates all file-system and image-processing work. It receives an `UploadedFile` instance and a `Project` model, stores the original file on the `public` disk, generates a 400 px-wide JPEG thumbnail using the Intervention Image v3 API, and returns a newly created `ProjectPhoto` model.
+1. **`Material` model** — add three methods:
+   - `scopeLowStock(Builder $query)` — Eloquent query scope to filter materials that are at or below their low-stock threshold.
+   - `isLowStock(): bool` — instance helper that returns whether the current model instance is in a low-stock state.
+   - `adjustQuantity(float $delta): void` — mutates `quantity_on_hand` (floored at 0) and saves the model.
 
-2. **`ProjectController::uploadPhoto()`** — the controller method is slimmed to: swap `Request` for `StoreProjectPhotoRequest`, inject `PhotoUploadService` via method injection, delegate to the service, and redirect back.
+2. **`MaterialController::adjustStock()`** — replace the stub with the real implementation. It accepts the already-existing `AdjustStockRequest` (which validates `quantity` as required numeric and `notes` as nullable string), delegates mutation to `$material->adjustQuantity()`, builds a human-readable flash message using the `MaterialUnit::label()` method on the model's cast `unit` attribute, and redirects to `materials.show`.
 
-The `app/Services/` directory does not exist yet and must be created. No new routes, migrations, or frontend changes are required.
+No new files need to be created. No migrations, no new routes, no frontend changes are required.
 
 ---
 
-## 2. Files to Create or Modify
+## 2. Files to Modify
 
-| File | Action |
-|------|--------|
-| `app/Services/PhotoUploadService.php` | Create |
-| `app/Http/Controllers/ProjectController.php` | Modify (update `uploadPhoto` signature and body) |
-| `tests/Feature/PhotoUploadTest.php` | Create |
+| File | Action | Notes |
+|------|--------|-------|
+| `app/Models/Material.php` | Modify | Add `scopeLowStock`, `isLowStock`, `adjustQuantity`; add `Builder` import |
+| `app/Http/Controllers/MaterialController.php` | Modify | Replace stub `adjustStock` body; swap `Request` type-hint for `AdjustStockRequest` |
 
-No other files are changed.
+No files are created. No other files are changed.
 
 ---
 
 ## 3. Exact Implementation
 
-### 3.1 `app/Services/PhotoUploadService.php`
+### 3.1 `app/Models/Material.php`
+
+Add one import at the top of the file:
 
 ```php
-<?php
+use Illuminate\Database\Eloquent\Builder;
+```
 
-namespace App\Services;
+Add three methods to the `Material` class body (placement: after the `tags()` relation, before the closing brace):
 
-use App\Models\Project;
-use App\Models\ProjectPhoto;
-use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Storage;
-use Intervention\Image\ImageManager;
-
-class PhotoUploadService
+```php
+public function scopeLowStock(Builder $query): Builder
 {
-    /**
-     * Store the uploaded photo, generate a thumbnail, and persist the
-     * ProjectPhoto record.
-     */
-    public function store(UploadedFile $file, Project $project, ?string $caption): ProjectPhoto
-    {
-        $ulid      = (string) \Illuminate\Support\Str::ulid();
-        $extension = strtolower($file->getClientOriginalExtension());
-
-        // Store original on the public disk
-        $originalPath   = "projects/{$project->id}/photos/{$ulid}.{$extension}";
-        $thumbnailPath  = "projects/{$project->id}/thumbnails/{$ulid}.jpg";
-
-        Storage::disk('public')->put(
-            $originalPath,
-            file_get_contents($file->getRealPath())
-        );
-
-        // Generate 400 px-wide thumbnail (preserve aspect ratio) — Intervention Image v3
-        $manager   = ImageManager::gd();
-        $image     = $manager->read($file->getRealPath());
-        $thumbnail = $image->scale(width: 400)->toJpeg();
-
-        Storage::disk('public')->put($thumbnailPath, (string) $thumbnail);
-
-        // Determine next sort_order
-        $nextSort = (int) $project->photos()->max('sort_order') + 1;
-
-        return $project->photos()->create([
-            'file_path'      => $originalPath,
-            'thumbnail_path' => $thumbnailPath,
-            'caption'        => $caption,
-            'sort_order'     => $nextSort,
-        ]);
-    }
+    return $query->whereNotNull('low_stock_threshold')
+        ->whereColumn('quantity_on_hand', '<=', 'low_stock_threshold');
 }
-```
 
-**Key API choices:**
-
-- `ImageManager::gd()` — static constructor for the GD driver, v3 API. NOT `Image::make()` (v2).
-- `$manager->read($file->getRealPath())` — v3 API to decode an image from a file path.
-- `->scale(width: 400)` — scales to 400 px wide while preserving aspect ratio. This uses `ScaleModifier` which keeps the original width-to-height ratio. Only `width` is passed; height is `null` (omitted) so it is computed proportionally.
-- `->toJpeg()` — encodes the result as JPEG. Returns an `EncodedImage` instance; cast to `string` gives the raw binary content suitable for `Storage::put()`.
-- `Storage::disk('public')->put(...)` — stores under `storage/app/public/` on the `public` disk, which is symlinked to `public/storage/` via `php artisan storage:link`.
-
-**Why `scale()` over `resize()`:**
-
-`resize()` requires both `$width` and `$height` and will stretch/distort if only one is provided. `scale()` (backed by `ScaleModifier`) is specifically designed for proportional scaling when only one dimension is supplied. Passing only `width: 400` and omitting `height` (defaults to `null`) scales to 400 px wide and computes height from the original aspect ratio.
-
-**Why `file_get_contents($file->getRealPath())` for the original:**
-
-`UploadedFile::store()` moves the temp file, which would invalidate `getRealPath()` for the thumbnail step. Using `Storage::disk('public')->put()` with the raw bytes and reading from `getRealPath()` afterwards keeps the temp file in place for the Intervention read.
-
----
-
-### 3.2 Modified `ProjectController::uploadPhoto()`
-
-Replace the stub with:
-
-```php
-use App\Http\Requests\StoreProjectPhotoRequest;
-use App\Services\PhotoUploadService;
-
-// ...
-
-public function uploadPhoto(
-    StoreProjectPhotoRequest $request,
-    Project $project,
-    PhotoUploadService $photoUploadService
-): RedirectResponse {
-    $photoUploadService->store(
-        $request->file('photo'),
-        $project,
-        $request->input('caption')
-    );
-
-    return redirect()->back()->with('success', 'Photo uploaded successfully.');
-}
-```
-
-The full updated controller head (imports only; the rest of the methods remain unchanged):
-
-```php
-use App\Http\Requests\StoreProjectPhotoRequest;
-use App\Services\PhotoUploadService;
-```
-
-Laravel's service container resolves `PhotoUploadService` automatically via method injection because it has no unresolvable constructor parameters.
-
----
-
-### 3.3 `tests/Feature/PhotoUploadTest.php`
-
-```php
-<?php
-
-namespace Tests\Feature;
-
-use App\Models\Project;
-use App\Models\ProjectPhoto;
-use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Storage;
-use PHPUnit\Framework\Attributes\Test;
-use Tests\TestCase;
-
-class PhotoUploadTest extends TestCase
+public function isLowStock(): bool
 {
-    use RefreshDatabase;
+    return $this->low_stock_threshold !== null
+        && $this->quantity_on_hand <= $this->low_stock_threshold;
+}
 
-    #[Test]
-    public function guest_cannot_upload_photo(): void
-    {
-        $project = Project::factory()->create();
-
-        $response = $this->post("/projects/{$project->slug}/photos", [
-            'photo' => UploadedFile::fake()->image('test.jpg'),
-        ]);
-
-        $response->assertRedirect('/login');
-    }
-
-    #[Test]
-    public function authenticated_user_can_upload_a_photo(): void
-    {
-        Storage::fake('public');
-
-        $user    = User::factory()->create();
-        $project = Project::factory()->create();
-
-        $file = UploadedFile::fake()->image('workshop.jpg', 800, 600);
-
-        $response = $this->actingAs($user)->post("/projects/{$project->slug}/photos", [
-            'photo'   => $file,
-            'caption' => 'A test caption',
-        ]);
-
-        $response->assertRedirect();
-
-        // One ProjectPhoto record created
-        $this->assertDatabaseCount('project_photos', 1);
-
-        $photo = ProjectPhoto::first();
-        $this->assertSame('A test caption', $photo->caption);
-        $this->assertSame(1, $photo->sort_order);
-        $this->assertSame($project->id, $photo->project_id);
-
-        // Files exist on public disk
-        Storage::disk('public')->assertExists($photo->file_path);
-        Storage::disk('public')->assertExists($photo->thumbnail_path);
-
-        // Paths follow the naming convention
-        $this->assertStringStartsWith("projects/{$project->id}/photos/", $photo->file_path);
-        $this->assertStringStartsWith("projects/{$project->id}/thumbnails/", $photo->thumbnail_path);
-        $this->assertStringEndsWith('.jpg', $photo->thumbnail_path);
-    }
-
-    #[Test]
-    public function sort_order_increments_for_subsequent_photos(): void
-    {
-        Storage::fake('public');
-
-        $user    = User::factory()->create();
-        $project = Project::factory()->create();
-
-        // Upload two photos
-        $this->actingAs($user)->post("/projects/{$project->slug}/photos", [
-            'photo' => UploadedFile::fake()->image('first.jpg', 400, 300),
-        ]);
-
-        $this->actingAs($user)->post("/projects/{$project->slug}/photos", [
-            'photo' => UploadedFile::fake()->image('second.jpg', 400, 300),
-        ]);
-
-        $photos = ProjectPhoto::orderBy('sort_order')->get();
-        $this->assertCount(2, $photos);
-        $this->assertSame(1, $photos[0]->sort_order);
-        $this->assertSame(2, $photos[1]->sort_order);
-    }
-
-    #[Test]
-    public function photo_upload_fails_validation_without_file(): void
-    {
-        $user    = User::factory()->create();
-        $project = Project::factory()->create();
-
-        $response = $this->actingAs($user)->post("/projects/{$project->slug}/photos", []);
-
-        $response->assertSessionHasErrors(['photo']);
-    }
-
-    #[Test]
-    public function photo_upload_fails_validation_for_non_image_mime(): void
-    {
-        $user    = User::factory()->create();
-        $project = Project::factory()->create();
-
-        $response = $this->actingAs($user)->post("/projects/{$project->slug}/photos", [
-            'photo' => UploadedFile::fake()->create('document.pdf', 100, 'application/pdf'),
-        ]);
-
-        $response->assertSessionHasErrors(['photo']);
-    }
-
-    #[Test]
-    public function caption_is_optional_and_may_be_null(): void
-    {
-        Storage::fake('public');
-
-        $user    = User::factory()->create();
-        $project = Project::factory()->create();
-
-        $this->actingAs($user)->post("/projects/{$project->slug}/photos", [
-            'photo' => UploadedFile::fake()->image('no-caption.jpg', 400, 300),
-        ]);
-
-        $this->assertNull(ProjectPhoto::first()->caption);
-    }
+public function adjustQuantity(float $delta): void
+{
+    $this->quantity_on_hand = max(0, $this->quantity_on_hand + $delta);
+    $this->save();
 }
 ```
 
-**Note on fake image thumbnails in tests:** `UploadedFile::fake()->image()` produces a real minimal GD-generated image. Intervention Image v3 reads it via `ImageManager::gd()->read()` using the actual GD extension. The test environment must have the PHP `gd` extension available (it is included in Laravel Sail's default PHP image). `Storage::fake('public')` intercepts disk writes so no real files are created on disk.
+The `scopeLowStock` scope uses `whereColumn` to compare two columns in the same row, which is translated to a SQL `WHERE quantity_on_hand <= low_stock_threshold` predicate. `whereNotNull('low_stock_threshold')` excludes materials for which no threshold has been set.
 
----
+`adjustQuantity` uses `max(0, ...)` to ensure stock never goes negative — a business rule constraint that lives in the model rather than in the controller or request.
 
-## 4. File Path Structure on Disk
+`isLowStock` checks the instance state without hitting the database, suitable for conditional rendering after an adjust operation or in a policy check.
 
-```
-storage/app/public/
-  projects/{project_ulid}/
-    photos/
-      {ulid}.jpg          ← original (preserves original extension: jpeg/png/webp)
-      {ulid}.png
-      {ulid}.webp
-    thumbnails/
-      {ulid}.jpg          ← thumbnail, always JPEG regardless of original format
+### 3.2 `app/Http/Controllers/MaterialController.php`
+
+Replace the existing import:
+
+```php
+use Illuminate\Http\Request;
 ```
 
-Accessed via URL: `Storage::url("projects/{$project->id}/photos/{$ulid}.{$ext}")` which resolves to `/storage/projects/...` after `php artisan storage:link`.
+with:
+
+```php
+use App\Http\Requests\AdjustStockRequest;
+use Illuminate\Http\Request;
+```
+
+(The plain `Request` import is retained because the existing `store` and `update` stubs still reference it. Only `adjustStock`'s signature changes.)
+
+Replace the stub method body:
+
+```php
+public function adjustStock(Request $request, Material $material): RedirectResponse
+{
+    return redirect()->back();
+}
+```
+
+with:
+
+```php
+public function adjustStock(AdjustStockRequest $request, Material $material): RedirectResponse
+{
+    $data = $request->validated();
+    $delta = (float) $data['quantity'];
+    $material->adjustQuantity($delta);
+    $direction = $delta >= 0 ? 'Added' : 'Removed';
+    $abs = abs($delta);
+    $unitLabel = $material->unit->label();
+    $after = $material->quantity_on_hand;
+    $message = "{$direction} {$abs} {$unitLabel} — stock now: {$after}";
+    if (!empty($data['notes'])) {
+        $message .= " ({$data['notes']})";
+    }
+    return redirect()->route('materials.show', $material)->with('success', $message);
+}
+```
+
+Note: `$material->quantity_on_hand` is read *after* `adjustQuantity()` has called `save()`, so it reflects the updated database value.
 
 ---
 
-## 5. Key Decisions
+## 4. Decisions and Rationale
 
-### Decision 1: `scale(width: 400)` not `resize(400, null)`
+### Decision 1: Keep business logic in the model (`adjustQuantity`)
 
-`Image::resize()` in v3 accepts both `?int $width` and `?int $height`. When one is `null`, it does NOT automatically preserve the aspect ratio — it only resizes to the provided dimension and leaves the other unchanged, potentially producing a distorted result. `scale()` is the correct v3 method for proportional scaling: it computes the missing dimension from the aspect ratio of the original. Only `width: 400` is passed; height is omitted (defaults to `null`) to preserve aspect ratio.
+The governance rules mandate "fat models, thin controllers." The `max(0, ...)` floor is a business rule: stock cannot go negative. Placing it in `adjustQuantity()` on the model ensures any future caller (a queued job, an Artisan command, another controller) cannot accidentally produce negative stock by calling the model directly.
 
-### Decision 2: ULID generated with `Str::ulid()`, not from the model
+### Decision 2: `adjustQuantity` uses `$this->save()` not `$this->update()`
 
-`ProjectPhoto` uses `HasUlids` which auto-generates the model's primary key ULID on save. However, the file paths need the ULID *before* the model is saved (so paths can be written to disk first). A separate `Str::ulid()` call is used to generate the path ULID. The model's `id` ULID is generated independently by `HasUlids` on `->create()`. The path-based ULID and model ID are different — this is intentional and acceptable: the path references a unique file name, and the model ID is the record identifier.
+`$this->update(['quantity_on_hand' => ...])` goes through mass-assignment filtering. Since `quantity_on_hand` is already in `$fillable` this would work, but using direct property assignment + `save()` is more explicit and avoids re-filtering. It also makes the intent clear: this is a targeted save of a computed value, not a user-supplied mass-assignment.
 
-### Decision 3: Method injection for `PhotoUploadService`
+### Decision 3: `scopeLowStock` uses `whereColumn` not a PHP-side filter
 
-Laravel resolves method-injected dependencies from the service container transparently when the controller method is invoked via routing. `PhotoUploadService` has no constructor parameters, so it requires no explicit binding in `AppServiceProvider`. Method injection is used (rather than constructor injection) to match the existing stub signature pattern and to avoid inflating the controller constructor with every single-use service.
+`whereColumn('quantity_on_hand', '<=', 'low_stock_threshold')` lets MySQL do the comparison in a single query without fetching all rows. This is important for the future dashboard widget or inventory report that will list low-stock items. A PHP-side filter (e.g., `->get()->filter(fn($m) => $m->isLowStock())`) would load the full materials table into memory.
 
-### Decision 4: `Storage::disk('public')->put()` over `UploadedFile::store()`
+### Decision 4: Flash message built in the controller, not the model
 
-`UploadedFile::store()` uses `move_uploaded_file()` internally, which permanently moves the temp file. The thumbnail step runs *after* storing the original and needs to read from `$file->getRealPath()`. Using `file_get_contents($file->getRealPath())` + `Storage::put()` preserves the temp file for the subsequent `$manager->read()` call.
+The message string is UI-layer concern — it combines a business value (the delta and new quantity) with a human-readable unit label. The model's `adjustQuantity()` returns `void` and has no knowledge of the HTTP layer. The controller constructs the string from public model attributes and the `MaterialUnit::label()` enum method after the save completes.
 
-### Decision 5: Always emit JPEG thumbnails
+### Decision 5: `AdjustStockRequest` already exists — no new form request needed
 
-All thumbnails are saved as `.jpg` regardless of the original format (jpeg, png, webp). This keeps thumbnail rendering simple, produces consistently small file sizes, and avoids storing transparency in thumbnails (PNG alpha channels are dropped). The `->toJpeg()` method on the Intervention `Image` object handles the encoding.
+`app/Http/Requests/AdjustStockRequest.php` is already in place with correct rules (`quantity` required numeric, `notes` nullable string). The controller stub accepted `Request $request` — the only change required is swapping the type-hint to `AdjustStockRequest`.
 
-### Decision 6: `sort_order = max(sort_order) + 1`
+### Decision 6: Redirect to `materials.show`, not `redirect()->back()`
 
-`$project->photos()->max('sort_order') + 1` starts at 1 for the first photo (since `max` of an empty set returns `null`, and `null + 1 = 1` in PHP). This is simple and avoids gaps that a COUNT-based approach would create if photos are later deleted.
+The stub uses `redirect()->back()`. The task spec redirects to `materials.show` with the material as the route parameter. Route model binding on the `materials` resource uses the model's ULID (`{material}` key). Passing the `$material` instance to `redirect()->route('materials.show', $material)` lets Laravel resolve the ULID automatically via the model's route key (`getRouteKey()`).
 
 ---
 
-## 6. Verified Dependencies
+## 5. Verified Dependencies
 
 | Requirement | Status |
 |-------------|--------|
-| `intervention/image` v3.11 | Confirmed in `composer.json` — `"intervention/image": "^3.11"` |
-| `ImageManager::gd()` static method | Confirmed in `vendor/intervention/image/src/ImageManager.php` line 52 |
-| `$manager->read($path)` method | Confirmed in `vendor/intervention/image/src/ImageManager.php` line 85 |
-| `$image->scale(?int $width, ?int $height)` | Confirmed in `vendor/intervention/image/src/Image.php` line 653 |
-| `$image->toJpeg()` | Confirmed in `vendor/intervention/image/src/Image.php` line 931 |
-| `Storage::disk('public')` | Standard Laravel disk; `public` disk configured by default in `config/filesystems.php` |
-| `StoreProjectPhotoRequest` exists | Confirmed at `app/Http/Requests/StoreProjectPhotoRequest.php` |
-| `ProjectPhoto` model with `HasUlids` | Confirmed at `app/Models/ProjectPhoto.php` |
-| `Project::photos()` hasMany relation | Confirmed at `app/Models/Project.php` line 85 |
-| Route: `POST projects/{project}/photos` | Confirmed — named `projects.upload-photo`, resolves to `ProjectController@uploadPhoto` |
-| PHP `gd` extension | Available in Laravel Sail default image; required by `ImageManager::gd()` |
-| `app/Services/` directory | Does not exist yet — must be created before adding the service file |
+| `Material` model at `app/Models/Material.php` | Confirmed — file read, class exists |
+| `HasUlids`, `SoftDeletes`, `Searchable` traits on `Material` | Confirmed in model file |
+| `quantity_on_hand` in `$fillable` | Confirmed — line 26 of the model |
+| `low_stock_threshold` column on `materials` table | Confirmed — `decimal(10,2)` nullable in migration `2026_03_03_000006_create_materials_table.php` |
+| `quantity_on_hand` column on `materials` table | Confirmed — `decimal(10,2)` default 0, indexed |
+| `unit` cast to `MaterialUnit` enum | Confirmed — `casts()` method returns `['unit' => MaterialUnit::class]` |
+| `MaterialUnit::label()` method | Confirmed — all 14 cases covered in `app/Enums/MaterialUnit.php` |
+| `AdjustStockRequest` exists with correct rules | Confirmed — `app/Http/Requests/AdjustStockRequest.php` validates `quantity` (required, numeric) and `notes` (nullable, string) |
+| Route `materials.adjust-stock` — `POST /materials/{material}/adjust` | Confirmed in `routes/web.php` line 45, resolves to `MaterialController@adjustStock` |
+| Route `materials.show` named route | Confirmed — `Route::resource('materials', MaterialController::class)` generates `materials.show` |
+| `MaterialController::adjustStock` stub exists | Confirmed — current stub at line 43–46 accepts `Request $request`, returns `redirect()->back()` |
+| `MaterialFactory` with `quantity_on_hand` and `low_stock_threshold` | Confirmed — factory generates random float for quantity, null for threshold |
+| `MaterialControllerTest` uses `RefreshDatabase` and `Material::factory()` | Confirmed — existing test file at `tests/Feature/MaterialControllerTest.php` |
+| `Illuminate\Database\Eloquent\Builder` — available for type-hint in scope | Confirmed — standard Laravel Eloquent; no package install required |
 
 ---
 
-## 7. Risks and Mitigations
+## 6. Risks and Mitigations
 
-### Risk 1: GD extension not loaded in the test environment
+### Risk 1: Floating-point precision in `quantity_on_hand` after `adjustQuantity`
 
-**Risk:** `ImageManager::gd()` requires the PHP `gd` extension. If it is not loaded, a `DriverException` is thrown.
+**Risk:** The database column is `decimal(10,2)`. PHP's `float` type can introduce rounding errors (e.g., `10.1 + 0.2 = 10.299999...`). After `adjustQuantity`, `$material->quantity_on_hand` will reflect whatever PHP computed before the save. MySQL will round the stored value to two decimal places on write, but the value read back within the same request cycle (for the flash message) is the PHP float value, which may not match the stored DB value.
 
-**Mitigation:** Laravel Sail's default PHP 8.3 Docker image includes the `gd` extension. For CI environments, confirm `extension=gd` is enabled. The failing exception message from Intervention Image is descriptive enough to diagnose the root cause immediately.
+**Mitigation:** For the flash message, the discrepancy (if any) is cosmetic and sub-cent in magnitude. The stored value in MySQL is always correctly rounded. If precise display is needed, the implementer may apply `round($this->quantity_on_hand + $delta, 2)` inside `adjustQuantity`. The task spec does not require this — accept the risk as low severity.
 
-### Risk 2: `UploadedFile::fake()->image()` produces a minimal 1-color bitmap
+### Risk 2: Race condition on concurrent adjustments
 
-**Risk:** The fake image generated in tests is a real but minimal GD-created image (often 1×1 or specified dimensions). `scale(width: 400)` on an image smaller than 400 px wide will scale *up*, which is valid behaviour for `ScaleModifier`.
+**Risk:** Two simultaneous POST requests to `materials/{material}/adjust` both read `quantity_on_hand`, compute the delta, and write back. One update will silently overwrite the other.
 
-**Mitigation:** No issue. `scale()` works in both directions. The test does not assert thumbnail pixel dimensions — only that the file exists on disk.
+**Mitigation:** Out of scope for this task (single-user tool per CLAUDE.md: "solo woodworker"). Not addressed here. If concurrent access becomes a concern, a future task could wrap `adjustQuantity` in a `DB::transaction` with a pessimistic lock (`lockForUpdate()`).
 
-### Risk 3: `EncodedImage` cast to `string` vs `->toString()`
+### Risk 3: `$material->quantity_on_hand` in the flash message is the pre-save PHP value
 
-**Risk:** `->toJpeg()` returns an `EncodedImage` object (implementing `EncodedImageInterface`). Passing it to `Storage::disk('public')->put()` requires binary string content.
+**Risk:** `$material->save()` persists to the database. Reading `$material->quantity_on_hand` immediately after is the in-memory property, not a fresh DB read. If MySQL rounds the decimal differently from PHP, the flash message shows the PHP value.
 
-**Mitigation:** Confirmed in `vendor/intervention/image/src/EncodedImage.php` that `EncodedImage` implements `Stringable` and casting to `(string)` returns the raw binary data. `Storage::disk('public')->put($path, (string) $thumbnail)` is correct.
+**Mitigation:** The difference is at most 0.005 units (sub-penny rounding). The flash message is informational only, not used for financial calculations. Accepted as-is per spec.
 
-### Risk 4: `storage:link` not run in test environment
+### Risk 4: `scopeLowStock` does not account for soft-deleted records
 
-**Risk:** `Storage::fake('public')` in tests replaces the disk with an in-memory filesystem, so the symlink is irrelevant for tests. In production, `php artisan storage:link` must be run once after deployment.
+**Risk:** `scopeLowStock` uses `whereNotNull` + `whereColumn` but does not add `whereNull('deleted_at')`. Without the global soft-delete scope, soft-deleted materials could appear as low-stock.
 
-**Mitigation:** This is a deployment concern, not a code concern. The plan notes it but no code change is needed.
-
-### Risk 5: Original file extension handling for webp
-
-**Risk:** `$file->getClientOriginalExtension()` returns the client-supplied extension string (e.g., `webp`). An attacker could supply a spoofed extension. However, Laravel's `mimes:jpeg,png,webp` validation in `StoreProjectPhotoRequest` checks the actual MIME type by inspecting file content, not just the extension. Validation runs before the service is called.
-
-**Mitigation:** Rely on the validated MIME type from `StoreProjectPhotoRequest`. Extension is used only for the storage path filename; the file content has already been verified as an image of an accepted type.
+**Mitigation:** `Material` uses `SoftDeletes`, which applies a global scope automatically. Any Eloquent query builder on the `Material` model already excludes soft-deleted rows unless `->withTrashed()` is explicitly called. `scopeLowStock` is always chained on the `Material` query builder, so soft-deleted records are excluded by the global scope before `scopeLowStock` runs.
 
 ---
 
-## 8. Acceptance Criteria Coverage
+## 7. Acceptance Criteria Coverage
 
 | Criterion | How Met |
 |-----------|---------|
-| Uses `StoreProjectPhotoRequest` for validation | Controller signature changed to `StoreProjectPhotoRequest $request` — validation fires automatically before `uploadPhoto()` body executes |
-| Original stored at `projects/{project_id}/photos/{ulid}.{ext}` on `public` disk | `PhotoUploadService::store()` constructs `$originalPath = "projects/{$project->id}/photos/{$ulid}.{$extension}"` and calls `Storage::disk('public')->put($originalPath, ...)` |
-| 400 px-wide thumbnail, preserve aspect ratio, using `ImageManager::gd()` and `Image::read()` | `ImageManager::gd()->read($file->getRealPath())->scale(width: 400)` |
-| Thumbnail at `projects/{project_id}/thumbnails/{ulid}.jpg` | `$thumbnailPath = "projects/{$project->id}/thumbnails/{$ulid}.jpg"` |
-| `ProjectPhoto` record created with paths, caption, `sort_order = max+1` | `$project->photos()->create([...])` with computed `$nextSort` |
-| `PhotoUploadService` injected via method injection | `uploadPhoto(StoreProjectPhotoRequest $request, Project $project, PhotoUploadService $photoUploadService)` |
-| MUST use v3 API (`ImageManager::gd()`), NOT v2 `Image::make()` | Only v3 API used: `ImageManager::gd()`, `->read()`, `->scale()`, `->toJpeg()` |
+| `scopeLowStock` added to `Material` model | Added as `public function scopeLowStock(Builder $query): Builder` — callable as `Material::query()->lowStock()` |
+| Scope filters to rows where `quantity_on_hand <= low_stock_threshold` and threshold is not null | `whereNotNull('low_stock_threshold')->whereColumn('quantity_on_hand', '<=', 'low_stock_threshold')` |
+| `isLowStock()` added to `Material` model | Added as `public function isLowStock(): bool` — checks instance state without a DB call |
+| `adjustQuantity(float $delta)` added to `Material` model | Added as `public function adjustQuantity(float $delta): void` — floors at 0, persists with `save()` |
+| `adjustStock` controller uses `AdjustStockRequest` (not plain `Request`) | Type-hint changed to `AdjustStockRequest $request` — Laravel fires validation before the method body runs |
+| No validation logic in the controller | All validation rules remain in `AdjustStockRequest::rules()` — controller only calls `$request->validated()` |
+| Delta applied via model method, not inline in controller | Controller calls `$material->adjustQuantity($delta)` — no arithmetic in the controller |
+| Flash message includes direction, absolute quantity, unit label, new stock level, and optional notes | Message string built from `$direction`, `$abs`, `$unitLabel`, `$after`, and `$data['notes']` |
+| Redirect goes to `materials.show` with the material | `redirect()->route('materials.show', $material)->with('success', $message)` |
+| Stock cannot go below zero | `max(0, ...)` in `adjustQuantity` enforces the floor at the model level |

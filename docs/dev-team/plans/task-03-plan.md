@@ -1,402 +1,307 @@
-# Task 03 Plan: Time Entry Backend and Active Timer Shared Data
+# Task 03 Plan: Supplier CRUD Backend
 
-**Task ID:** 03
+**Task ID:** TASK-03
 **Domain:** backend
-**Files modified:** 3
+**Feature:** Supplier CRUD — controller, two form requests, routes
 **Status:** pending
 
 ---
 
-## 1. Objective
+## 1. Approach
 
-Implement `ProjectController::logTime()` and `ProjectController::stopTimer()`, add a `runningTimer()` scope to `TimeEntry`, and extend `HandleInertiaRequests::share()` with an `activeTimer` prop.
+Implement a full Supplier CRUD following the project conventions from CLAUDE.md:
+
+- **Fat models, thin controllers** — the `Supplier` model already defines all `$fillable` fields and the `materials()` / `expenses()` relationships. No model changes are required.
+- **Form requests for all validation** — two new `FormRequest` classes handle `store` and `update` validation. The controller never calls `$request->validate()`.
+- **ULID primary keys** — `Supplier` already uses `HasUlids`. Route model binding uses the ULID directly (no slug — suppliers have no slug field). Laravel resolves `Supplier $supplier` from the `{supplier}` route segment automatically via the ULID `id` column because `HasUlids` configures it as the route key.
+- **Hard delete** — per CLAUDE.md: "Hard delete everything else." Suppliers have no `SoftDeletes` trait in the model and must not gain one.
+- **Search via LIKE, not Scout** — `index()` uses an Eloquent `LIKE` query across `name`, `contact_name`, and `email`. Scout is used only for Projects per the spec; the task spec explicitly requires LIKE for suppliers.
+- **Inertia responses** — all read methods return `Inertia::render(...)`. Write methods return `RedirectResponse` with a `with('success', ...)` flash.
+
+No service class is needed — supplier persistence is straightforward `create` / `update` / `delete` with no side effects.
 
 ---
 
-## 2. Files to Modify
+## 2. Files to Create or Modify
 
-| File | Change |
+| File | Action |
 |------|--------|
-| `app/Models/TimeEntry.php` | Add `scopeRunning()` query scope and `computeDuration()` helper method |
-| `app/Http/Controllers/ProjectController.php` | Implement `logTime()` and `stopTimer()` |
-| `app/Http/Middleware/HandleInertiaRequests.php` | Add `activeTimer` to shared props |
+| `app/Http/Requests/StoreSupplierRequest.php` | Create |
+| `app/Http/Requests/UpdateSupplierRequest.php` | Create |
+| `app/Http/Controllers/SupplierController.php` | Create |
+| `routes/web.php` | Modify — add `Route::resource('suppliers', SupplierController::class)` inside the existing `auth + verified` middleware group |
 
-No new files are needed. `LogTimeRequest` is already correct and requires no changes.
-
----
-
-## 3. Approach
-
-### Fat model, thin controller
-
-Business logic goes in `TimeEntry`, keeping both controller methods short. Two additions to `TimeEntry`:
-
-- `scopeRunning(Builder $query)` — filters entries where `ended_at IS NULL`
-- `computeDuration(Carbon $start, Carbon $end): int` — returns whole minutes between two Carbon instances, minimum 1
-
-The controller calls the scope and the helper rather than embedding query/calculation logic inline.
-
-### Auto-stop logic
-
-Only one running timer is allowed at a time. `logTime()` must stop any existing running entry for any project before starting a new one. The auto-stop logic is identical to what `stopTimer()` does: set `ended_at = now()`, compute and store `duration_minutes`.
-
-### `const UPDATED_AT = null` constraint
-
-`TimeEntry` already declares `const UPDATED_AT = null`. This means:
-- `TimeEntry::create()` sets `created_at` automatically.
-- Calling `->save()` on an existing `TimeEntry` does NOT attempt to write `updated_at`.
-- No `updated_at` column exists in the `time_entries` table; attempting to set it would cause a DB error.
-
-This constraint is safe: `logTime()` calls `create()` (new record) and `stopTimer()` calls `save()` on an existing record with only `ended_at` and `duration_minutes` changed.
+No model changes. No migration changes (suppliers table already exists with all required columns as confirmed by the model's `$fillable`). No frontend files in this task.
 
 ---
 
-## 4. Detailed Implementation
+## 3. Detailed Implementation
 
-### 4.1 `TimeEntry` model additions
+### 3.1 `StoreSupplierRequest`
 
-**File:** `app/Models/TimeEntry.php`
-
-Add two imports at the top:
-```php
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Carbon;
-```
-
-Add a query scope to filter running timers (no `ended_at`):
-```php
-public function scopeRunning(Builder $query): void
-{
-    $query->whereNull('ended_at');
-}
-```
-
-Add a helper that computes duration in whole minutes between two Carbon instances, returning at least 1:
-```php
-public static function computeDuration(Carbon $start, Carbon $end): int
-{
-    return max(1, (int) $start->diffInMinutes($end));
-}
-```
-
-Placing `computeDuration` on the model follows the fat-model convention: it is directly related to time entry data and is needed in both `logTime()` and `stopTimer()`.
-
-### 4.2 `ProjectController::logTime()`
-
-**File:** `app/Http/Controllers/ProjectController.php`
-
-Replace the stub with:
-
-```php
-public function logTime(LogTimeRequest $request, Project $project): RedirectResponse
-{
-    $validated = $request->validated();
-
-    // Auto-stop any existing running timer before creating a new one.
-    $running = TimeEntry::running()->first();
-    if ($running) {
-        $now = now();
-        $running->ended_at       = $now;
-        $running->duration_minutes = TimeEntry::computeDuration($running->started_at, $now);
-        $running->save();
-    }
-
-    // Determine duration_minutes.
-    $durationMinutes = null;
-    if (isset($validated['ended_at'])) {
-        $start           = \Illuminate\Support\Carbon::parse($validated['started_at']);
-        $end             = \Illuminate\Support\Carbon::parse($validated['ended_at']);
-        $durationMinutes = $validated['duration_minutes']
-            ?? TimeEntry::computeDuration($start, $end);
-    } elseif (isset($validated['duration_minutes'])) {
-        $durationMinutes = $validated['duration_minutes'];
-    }
-    // If ended_at is null and no duration_minutes, this is a running timer — leave null.
-
-    $project->timeEntries()->create([
-        'started_at'       => $validated['started_at'],
-        'ended_at'         => $validated['ended_at'] ?? null,
-        'description'      => $validated['description'] ?? null,
-        'duration_minutes' => $durationMinutes,
-    ]);
-
-    return redirect()->back()->with('success', 'Time logged.');
-}
-```
-
-Key decisions:
-- `LogTimeRequest` is used instead of `Request` — the method signature changes.
-- `TimeEntry::running()->first()` queries globally across all projects (the spec requires only one running timer at a time, not one per project).
-- When `ended_at` is provided, `duration_minutes` is computed from the diff unless the client has already sent a value.
-- When `ended_at` is null, `duration_minutes` is null — this entry is a running timer.
-
-Add `LogTimeRequest` to the controller's use statements:
-```php
-use App\Http\Requests\LogTimeRequest;
-```
-
-The existing `use Illuminate\Http\Request;` import remains for the other stub methods.
-
-### 4.3 `ProjectController::stopTimer()`
-
-**File:** `app/Http/Controllers/ProjectController.php`
-
-Replace the stub with:
-
-```php
-public function stopTimer(Project $project, TimeEntry $entry): RedirectResponse
-{
-    $now = now();
-    $entry->ended_at         = $now;
-    $entry->duration_minutes = TimeEntry::computeDuration($entry->started_at, $now);
-    $entry->save();
-
-    return redirect()->back()->with('success', 'Timer stopped.');
-}
-```
-
-Key decisions:
-- `now()` is called once and stored in `$now` so `ended_at` and the diff use exactly the same instant.
-- `Carbon::diffInMinutes` is wrapped by `computeDuration`, which enforces the minimum-1-minute rule.
-- `save()` is safe because `const UPDATED_AT = null` prevents Eloquent from touching a nonexistent `updated_at` column.
-- No explicit guard for "already stopped" entries: the route will be hit only when the UI knows a timer is running. If needed, a check (`if ($entry->ended_at)`) could be added, but it is not required by the acceptance criteria.
-
-### 4.4 `HandleInertiaRequests::share()` — `activeTimer` prop
-
-**File:** `app/Http/Middleware/HandleInertiaRequests.php`
-
-Add `TimeEntry` and `Carbon` imports:
-```php
-use App\Models\TimeEntry;
-```
-
-Extend the `share()` return array with:
-```php
-'activeTimer' => function () use ($request) {
-    if (! $request->user()) {
-        return null;
-    }
-
-    $entry = TimeEntry::running()
-        ->with('project:id,slug,title')
-        ->first();
-
-    if (! $entry) {
-        return null;
-    }
-
-    return [
-        'id'            => $entry->id,
-        'project_id'    => $entry->project_id,
-        'project_slug'  => $entry->project->slug,
-        'project_title' => $entry->project->title,
-        'started_at'    => $entry->started_at,
-    ];
-},
-```
-
-Key decisions:
-- A closure (lazy prop) is used so the DB query runs only when the Inertia response is actually rendered, not on every middleware pass including non-Inertia requests.
-- `with('project:id,slug,title')` eager-loads only the three project columns needed, avoiding a full project SELECT.
-- The null guard on `$request->user()` prevents the query from running on unauthenticated requests (login page, portfolio, etc.).
-- `started_at` is returned as a Carbon instance; Inertia/JSON serialization will convert it to an ISO 8601 string automatically.
-- The shape matches the acceptance criteria exactly: `{ id, project_id, project_slug, project_title, started_at }`.
-
----
-
-## 5. Complete File Diffs
-
-### 5.1 `TimeEntry.php` — final state
+**File:** `app/Http/Requests/StoreSupplierRequest.php`
 
 ```php
 <?php
 
-namespace App\Models;
+namespace App\Http\Requests;
 
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Support\Carbon;
+use Illuminate\Foundation\Http\FormRequest;
 
-class TimeEntry extends Model
+class StoreSupplierRequest extends FormRequest
 {
-    use HasFactory, HasUlids;
+    public function authorize(): bool
+    {
+        return true;
+    }
 
-    const UPDATED_AT = null;
-
-    protected $fillable = [
-        'project_id',
-        'started_at',
-        'ended_at',
-        'duration_minutes',
-        'description',
-    ];
-
-    protected function casts(): array
+    public function rules(): array
     {
         return [
-            'started_at'       => 'datetime',
-            'ended_at'         => 'datetime',
-            'duration_minutes' => 'integer',
+            'name'         => ['required', 'string', 'max:255'],
+            'contact_name' => ['nullable', 'string', 'max:255'],
+            'email'        => ['nullable', 'email', 'max:255'],
+            'phone'        => ['nullable', 'string', 'max:50'],
+            'website'      => ['nullable', 'url', 'max:500'],
+            'address'      => ['nullable', 'string'],
+            'notes'        => ['nullable', 'string'],
         ];
     }
-
-    public function project(): BelongsTo
-    {
-        return $this->belongsTo(Project::class);
-    }
-
-    public function scopeRunning(Builder $query): void
-    {
-        $query->whereNull('ended_at');
-    }
-
-    public static function computeDuration(Carbon $start, Carbon $end): int
-    {
-        return max(1, (int) $start->diffInMinutes($end));
-    }
 }
 ```
 
-### 5.2 `ProjectController.php` — relevant methods (final state)
+`authorize()` returns `true` unconditionally — this is the established pattern in every other `FormRequest` in this codebase (see `StoreMaterialRequest`, `StoreToolRequest`, `StoreProjectRequest`). Route-level auth is enforced by the `auth + verified` middleware group in `routes/web.php`.
 
-```php
-use App\Http\Requests\LogTimeRequest;
-// (existing imports remain)
+### 3.2 `UpdateSupplierRequest`
 
-public function logTime(LogTimeRequest $request, Project $project): RedirectResponse
-{
-    $validated = $request->validated();
-
-    $running = TimeEntry::running()->first();
-    if ($running) {
-        $now = now();
-        $running->ended_at         = $now;
-        $running->duration_minutes = TimeEntry::computeDuration($running->started_at, $now);
-        $running->save();
-    }
-
-    $durationMinutes = null;
-    if (isset($validated['ended_at'])) {
-        $start           = \Illuminate\Support\Carbon::parse($validated['started_at']);
-        $end             = \Illuminate\Support\Carbon::parse($validated['ended_at']);
-        $durationMinutes = $validated['duration_minutes']
-            ?? TimeEntry::computeDuration($start, $end);
-    } elseif (isset($validated['duration_minutes'])) {
-        $durationMinutes = $validated['duration_minutes'];
-    }
-
-    $project->timeEntries()->create([
-        'started_at'       => $validated['started_at'],
-        'ended_at'         => $validated['ended_at'] ?? null,
-        'description'      => $validated['description'] ?? null,
-        'duration_minutes' => $durationMinutes,
-    ]);
-
-    return redirect()->back()->with('success', 'Time logged.');
-}
-
-public function stopTimer(Project $project, TimeEntry $entry): RedirectResponse
-{
-    $now = now();
-    $entry->ended_at         = $now;
-    $entry->duration_minutes = TimeEntry::computeDuration($entry->started_at, $now);
-    $entry->save();
-
-    return redirect()->back()->with('success', 'Timer stopped.');
-}
-```
-
-### 5.3 `HandleInertiaRequests.php` — final state
+**File:** `app/Http/Requests/UpdateSupplierRequest.php`
 
 ```php
 <?php
 
-namespace App\Http\Middleware;
+namespace App\Http\Requests;
 
-use App\Models\TimeEntry;
-use Illuminate\Http\Request;
-use Inertia\Middleware;
+use Illuminate\Foundation\Http\FormRequest;
 
-class HandleInertiaRequests extends Middleware
+class UpdateSupplierRequest extends FormRequest
 {
-    protected $rootView = 'app';
-
-    public function version(Request $request): ?string
+    public function authorize(): bool
     {
-        return parent::version($request);
+        return true;
     }
 
-    public function share(Request $request): array
+    public function rules(): array
     {
-        return array_merge(parent::share($request), [
-            'auth' => [
-                'user' => $request->user()
-                    ? $request->user()->only(['id', 'name', 'email'])
-                    : null,
-            ],
-            'flash' => [
-                'success' => $request->session()->get('success'),
-                'error'   => $request->session()->get('error'),
-                'warning' => $request->session()->get('warning'),
-                'info'    => $request->session()->get('info'),
-            ],
-            'appName' => config('app.name'),
-            'activeTimer' => function () use ($request) {
-                if (! $request->user()) {
-                    return null;
-                }
-
-                $entry = TimeEntry::running()
-                    ->with('project:id,slug,title')
-                    ->first();
-
-                if (! $entry) {
-                    return null;
-                }
-
-                return [
-                    'id'            => $entry->id,
-                    'project_id'    => $entry->project_id,
-                    'project_slug'  => $entry->project->slug,
-                    'project_title' => $entry->project->title,
-                    'started_at'    => $entry->started_at,
-                ];
-            },
-        ]);
+        return [
+            'name'         => ['sometimes', 'required', 'string', 'max:255'],
+            'contact_name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'email'        => ['sometimes', 'nullable', 'email', 'max:255'],
+            'phone'        => ['sometimes', 'nullable', 'string', 'max:50'],
+            'website'      => ['sometimes', 'nullable', 'url', 'max:500'],
+            'address'      => ['sometimes', 'nullable', 'string'],
+            'notes'        => ['sometimes', 'nullable', 'string'],
+        ];
     }
 }
 ```
 
+`sometimes` is prepended to every rule. This is identical to the pattern in `UpdateMaterialRequest` and `UpdateProjectRequest` — `sometimes` means the rule is only evaluated if the field is present in the request payload, supporting partial PATCH-style updates from the frontend form.
+
+### 3.3 `SupplierController`
+
+**File:** `app/Http/Controllers/SupplierController.php`
+
+```php
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Requests\StoreSupplierRequest;
+use App\Http\Requests\UpdateSupplierRequest;
+use App\Models\Supplier;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Inertia\Inertia;
+use Inertia\Response;
+
+class SupplierController extends Controller
+{
+    public function index(Request $request): Response
+    {
+        $search = $request->input('search');
+
+        $suppliers = Supplier::query()
+            ->when($search, function ($query, $search) {
+                $query->where(function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                      ->orWhere('contact_name', 'like', "%{$search}%")
+                      ->orWhere('email', 'like', "%{$search}%");
+                });
+            })
+            ->orderBy('name')
+            ->paginate(20)
+            ->withQueryString();
+
+        return Inertia::render('Suppliers/Index', [
+            'suppliers' => $suppliers,
+            'filters'   => ['search' => $search],
+        ]);
+    }
+
+    public function create(): Response
+    {
+        return Inertia::render('Suppliers/Create');
+    }
+
+    public function store(StoreSupplierRequest $request): RedirectResponse
+    {
+        $supplier = Supplier::create($request->validated());
+
+        return redirect()->route('suppliers.show', $supplier)
+            ->with('success', 'Supplier created successfully.');
+    }
+
+    public function show(Supplier $supplier): Response
+    {
+        $supplier->loadCount('materials');
+
+        return Inertia::render('Suppliers/Show', [
+            'supplier' => $supplier,
+        ]);
+    }
+
+    public function edit(Supplier $supplier): Response
+    {
+        return Inertia::render('Suppliers/Edit', [
+            'supplier' => $supplier,
+        ]);
+    }
+
+    public function update(UpdateSupplierRequest $request, Supplier $supplier): RedirectResponse
+    {
+        $supplier->update($request->validated());
+
+        return redirect()->route('suppliers.show', $supplier)
+            ->with('success', 'Supplier updated successfully.');
+    }
+
+    public function destroy(Supplier $supplier): RedirectResponse
+    {
+        $supplier->delete();
+
+        return redirect()->route('suppliers.index')
+            ->with('success', 'Supplier deleted successfully.');
+    }
+}
+```
+
+### 3.4 `routes/web.php` modification
+
+Inside the existing `Route::middleware(['auth', 'verified'])->group(...)` block, add one line after the Tools resource block (before Finance routes, for logical grouping):
+
+```php
+// Suppliers (resource: index, create, store, show, edit, update, destroy)
+Route::resource('suppliers', SupplierController::class);
+```
+
+Also add the import at the top of the file alongside the other controller imports:
+
+```php
+use App\Http\Controllers\SupplierController;
+```
+
+The full supplier resource registers these seven routes:
+
+| Method | URI | Name | Action |
+|--------|-----|------|--------|
+| GET | `/suppliers` | `suppliers.index` | `index` |
+| GET | `/suppliers/create` | `suppliers.create` | `create` |
+| POST | `/suppliers` | `suppliers.store` | `store` |
+| GET | `/suppliers/{supplier}` | `suppliers.show` | `show` |
+| GET | `/suppliers/{supplier}/edit` | `suppliers.edit` | `edit` |
+| PUT/PATCH | `/suppliers/{supplier}` | `suppliers.update` | `update` |
+| DELETE | `/suppliers/{supplier}` | `suppliers.destroy` | `destroy` |
+
+No `->except([...])` call is needed — all seven standard resource routes are required, including `destroy` (hard delete).
+
 ---
 
-## 6. Edge Cases and Decisions
+## 4. Key Decisions and Rationale
 
-### Decision 1: Global auto-stop, not per-project
+### Decision 1: Route model binding uses ULID, not slug
 
-`TimeEntry::running()->first()` queries across all projects. The spec says "only one running timer at a time" globally, not per-project. If a user starts a timer on Project A while a timer is running on Project B, the Project B timer is stopped automatically.
+The `Supplier` model has no `slug` field. CLAUDE.md states "Route model binding with slug for projects, ULID for other models." `HasUlids` sets the route key to the `id` column (a ULID), so `{supplier}` in the URI resolves to `Supplier` by ULID automatically with no extra configuration. This is consistent with how `MaterialController` and `ToolController` use their ULID-keyed models.
 
-### Decision 2: `duration_minutes` when client sends both `ended_at` and `duration_minutes`
+### Decision 2: LIKE search — not Scout — for `index()`
 
-The client-supplied `duration_minutes` takes precedence when `ended_at` is also present. This supports manual time entry where a user may round or adjust the duration. The server-computed value is used only as a fallback (`?? TimeEntry::computeDuration(...)`).
+The task spec explicitly requires "LIKE search on name/contact_name/email (NOT Scout)." Scout with the database driver is configured for `Project` (which implements `Searchable`). `Supplier` does not implement `Searchable` and must not be added to Scout. The LIKE approach with `->when($search, ...)` is correct and sufficient for a solo-user tool with a small supplier list.
 
-### Decision 3: `diffInMinutes` truncates, not rounds
+The OR group is wrapped in a nested `where(function ($q) {...})` closure to correctly parenthesize the OR clauses — without the closure wrapper, the `orWhere` calls would leak outside any other `where` conditions, producing incorrect SQL. For `index()` there are no other `where` clauses currently, but the closure is correct defensive style.
 
-`Carbon::diffInMinutes()` truncates to whole minutes (floor). A session of 1 minute 59 seconds returns 1 minute. The `max(1, ...)` guard in `computeDuration` ensures a session shorter than 60 seconds still records as 1 minute rather than 0.
+### Decision 3: `paginate(20)->withQueryString()`
 
-### Decision 4: Lazy prop closure in `share()`
+`withQueryString()` appends the current query string (including `search=...`) to pagination links. Without it, navigating to page 2 of a search result would lose the search term. This is the same pattern used in `ProjectController::index()`.
 
-Using a closure for `activeTimer` makes it a lazy Inertia prop. Inertia evaluates closures only when building the response, which means the DB query is skipped entirely on non-Inertia partial reloads that do not include `activeTimer` in the requested props. This is the correct pattern for shared data that requires a DB query.
+### Decision 4: `loadCount('materials')` in `show()`
 
-### Decision 5: `with('project:id,slug,title')` column selection
+`$supplier->loadCount('materials')` appends a `materials_count` integer attribute to the supplier model instance, which the frontend can display (e.g., "12 materials use this supplier"). It does not eager-load the material rows themselves, keeping the `show` response lightweight. The `materials()` relationship is already defined on the `Supplier` model.
 
-The eager-load uses the colon syntax (`project:id,slug,title`) to select only the three columns needed for the `activeTimer` shape. This avoids loading the full project row (description, notes, etc.) for every Inertia page load.
+### Decision 5: Hard delete in `destroy()`
 
-### Decision 6: `$project` parameter in `logTime` and `stopTimer`
+`$supplier->delete()` performs a hard delete because `Supplier` does not use `SoftDeletes`. Per CLAUDE.md: "Soft deletes on: projects, materials, tools. Hard delete everything else." If a supplier has associated materials, the foreign key in the `materials` table (`supplier_id`) will be set to `NULL` on delete (assuming the migration defines `->nullable()->constrained()->nullOnDelete()`). This is the correct behavior — materials should not be deleted when a supplier is removed.
 
-Both methods receive `$project` via route model binding (slug). The `logTime()` method uses `$project->timeEntries()->create()` to ensure the new entry's `project_id` is set correctly. The `stopTimer()` method receives both `$project` and `$entry`; the `$project` binding validates that the entry's project matches the URL (implicit scoping — Laravel's implicit route model binding scopes the child model to the parent when both are present in the route definition).
+### Decision 6: Flash messages match existing conventions
+
+All redirect flash keys use `'success'` to match `ProjectController`, which uses `->with('success', '...')` exclusively. The `HandleInertiaRequests` middleware shares `flash.success` with the frontend.
+
+### Decision 7: `index()` passes `filters` array to the frontend
+
+`['search' => $search]` is passed as `filters` so the frontend can repopulate the search input field. This mirrors `ProjectController::index()` which passes `'filters' => $filters`.
+
+---
+
+## 5. Verified Dependencies
+
+| Requirement | Status |
+|-------------|--------|
+| `Supplier` model exists with `HasUlids`, `HasFactory`, correct `$fillable` | Confirmed — `app/Models/Supplier.php` |
+| `Supplier::materials()` hasMany relation | Confirmed — `app/Models/Supplier.php` line 24 |
+| `Supplier` has no `SoftDeletes` trait | Confirmed — model only uses `HasFactory` and `HasUlids` |
+| `Supplier` has no `Searchable` trait | Confirmed — Scout is not involved |
+| `auth + verified` middleware group exists in `routes/web.php` | Confirmed — line 27 |
+| All other resource controllers follow the same Inertia + FormRequest pattern | Confirmed — `ProjectController`, `MaterialController`, `ToolController` |
+| `authorize(): bool { return true; }` is the established FormRequest pattern | Confirmed — `StoreMaterialRequest`, `UpdateMaterialRequest`, `StoreToolRequest` all return `true` |
+| `suppliers` table exists with all required columns | Inferred from `Supplier::$fillable` matching task spec fields; model was present in the initial commit |
+| No `slug` column on suppliers table | Confirmed by model — `$fillable` does not include `slug` |
+| `Route::resource` generates all 7 standard routes | Laravel 12 standard behavior, no overrides needed |
+
+---
+
+## 6. Risks and Mitigations
+
+### Risk 1: Foreign key constraint violation on `destroy()`
+
+**Risk:** If the `materials.supplier_id` foreign key is `RESTRICT` (not `SET NULL`), deleting a supplier that has associated materials will throw a database integrity error.
+
+**Mitigation:** The migration for `materials` should define `->nullOnDelete()` on the `supplier_id` foreign key. If not already the case, this is a migration concern (Task 01 or a migration fix task). The controller itself calls `$supplier->delete()` correctly — no special handling is needed at the controller level beyond what the DB constraint enforces. The implementer should verify the migration's cascade rule before running tests.
+
+### Risk 2: `LIKE` search performance
+
+**Risk:** `LIKE "%term%"` (leading wildcard) cannot use a B-tree index and will do a full table scan. For a solo woodworker's supplier list, this is not a practical concern.
+
+**Mitigation:** None required. The application is single-user and supplier counts will be small (tens to low hundreds). If performance becomes an issue in the future, a `FULLTEXT` index can be added.
+
+### Risk 3: `withQueryString()` missing from `paginate()`
+
+**Risk:** Forgetting `withQueryString()` causes search pagination to lose the `search` parameter on page 2+.
+
+**Mitigation:** Included explicitly in the implementation per the task spec.
+
+### Risk 4: Route key conflict between `/suppliers/create` and `{supplier}` ULID binding
+
+**Risk:** If the router tries to resolve the literal string `"create"` as a ULID for a `GET /suppliers/create` request, it would fail.
+
+**Mitigation:** Laravel's resource route registration always registers `/suppliers/create` as a named literal route before `{supplier}` pattern routes. No conflict occurs. This is standard Laravel behavior unchanged in v12.
 
 ---
 
@@ -404,15 +309,18 @@ Both methods receive `$project` via route model binding (slug). The `logTime()` 
 
 | Criterion | Implementation |
 |-----------|---------------|
-| `logTime()` uses `LogTimeRequest` | Method signature is `logTime(LogTimeRequest $request, Project $project)` |
-| `logTime()` creates a `TimeEntry` | `$project->timeEntries()->create([...])` |
-| When `ended_at` provided, compute `duration_minutes` from diff if not sent | `?? TimeEntry::computeDuration($start, $end)` fallback |
-| When `ended_at` null, entry is a running timer | `duration_minutes` left as `null` |
-| Only one running timer: auto-stop existing before creating new | `TimeEntry::running()->first()` + stop logic before `create()` |
-| `stopTimer()` sets `ended_at = now()` | `$entry->ended_at = $now` |
-| `stopTimer()` computes `duration_minutes` via Carbon diff | `TimeEntry::computeDuration($entry->started_at, $now)` |
-| `stopTimer()` saves and redirects with flash | `$entry->save()` + `redirect()->back()->with('success', ...)` |
-| `share()` adds `activeTimer` | Added as lazy closure |
-| `activeTimer` is null when no running timer | `if (! $entry) return null` |
-| `activeTimer` shape: `{ id, project_id, project_slug, project_title, started_at }` | Returned array matches exactly |
-| `const UPDATED_AT = null` respected — no `updated_at` written | `save()` on existing entry only sets `ended_at` and `duration_minutes`; Eloquent skips `updated_at` due to the constant |
+| `StoreSupplierRequest` with correct rules | Section 3.1 — all 7 fields with required/nullable/type/max rules |
+| `UpdateSupplierRequest` with `sometimes` prefix on all fields | Section 3.2 — `sometimes` prepended to every rule |
+| `index()` LIKE search on name, contact_name, email | `->where('name', 'like', "%{search}%")->orWhere(...)` in nested closure |
+| `index()` not using Scout | No `Supplier::search()` call anywhere |
+| `index()` orderBy name, paginate(20), withQueryString | `->orderBy('name')->paginate(20)->withQueryString()` |
+| `create()` renders Inertia page | `return Inertia::render('Suppliers/Create')` |
+| `store()` uses `Supplier::create`, redirects to show with flash | `Supplier::create($request->validated())` + `redirect()->route('suppliers.show', $supplier)->with('success', ...)` |
+| `show()` loadCount materials | `$supplier->loadCount('materials')` |
+| `edit()` renders with supplier | `Inertia::render('Suppliers/Edit', ['supplier' => $supplier])` |
+| `update()` uses `$supplier->update`, redirects to show | `$supplier->update($request->validated())` + redirect to show |
+| `destroy()` hard delete, redirect to index | `$supplier->delete()` (hard, no SoftDeletes) + `redirect()->route('suppliers.index')` |
+| Routes inside `auth + verified` middleware group | Added inside the existing `Route::middleware(['auth', 'verified'])->group(...)` block |
+| Full resource routes (all 7) registered | `Route::resource('suppliers', SupplierController::class)` with no `->except([])` |
+| ULID primary key / route model binding | `HasUlids` on the model; `{supplier}` resolves by ULID `id` column automatically |
+| Hard delete (no SoftDeletes) | Confirmed by model; `delete()` is permanent |

@@ -1,20 +1,29 @@
-# Task 08 Plan: Persistent Timer Widget in AppLayout
+# Task 08 Plan: Material Controller Feature Tests
 
-**Task ID:** 08
-**Domain:** frontend
-**Parallel Group:** 4 (depends on Task 03)
-**Complexity:** M
+**Task ID:** TASK-08
+**Domain:** backend-laravel
+**Parallel Group:** 3 (depends on TASK-01 and TASK-02)
+**Complexity:** Medium
 **Status:** pending
 
 ---
 
 ## 1. Approach
 
-Replace the two static `00:00:00` placeholder elements in `AppLayout.jsx` with a live timer widget implemented as an extracted `TimerWidget` component (defined in the same file or as a separate file in `Components/`). The widget reads `activeTimer` from `usePage().props.activeTimer`, manages a `setInterval` via `useEffect`, and displays a ticking `HH:MM:SS` counter in amber when a timer is running.
+Replace the four placeholder tests in `tests/Feature/MaterialControllerTest.php` with a complete 20-test suite that exercises every MaterialController action plus the `Material::lowStock()` model scope. The file is a full replacement — no existing test methods are kept.
 
-No new npm packages are required. The implementation uses only React built-ins (`useState`, `useEffect`) and Inertia's `usePage` and `router`, which are already imported in `AppLayout.jsx`.
+The implementation follows the exact patterns established in `ProjectControllerTest.php`:
 
-The plan extracts a `TimerWidget` component and renders it in both the desktop and mobile locations in `AppLayout.jsx`. Both render the same component so tick behavior is identical and state is shared (via the shared `activeTimer` prop from Inertia — not local state passed between instances; each renders its own `TimerWidget` instance since they are in different layout positions).
+- `#[Test]` attributes on every method (PHPUnit 11 style, no docblock annotations)
+- `RefreshDatabase` trait on the class
+- A `private User $user` property populated in `setUp()` so individual tests do not repeat `User::factory()->create()`
+- Factory-only test data — no hardcoded IDs or raw database inserts
+- `assertInertia()` for all page assertions (component name + presence of prop keys)
+- `assertSessionHasErrors(['field'])` for all validation failure tests
+- `assertSoftDeleted('materials', ['id' => $material->id])` for the destroy test
+- Arithmetic verified directly with `assertDatabaseHas` after stock adjustment calls
+
+The 20 tests are organized into eight groups matching controller method boundaries, plus one model-level scope test that performs no HTTP request.
 
 ---
 
@@ -22,366 +31,690 @@ The plan extracts a `TimerWidget` component and renders it in both the desktop a
 
 | Action | Path |
 |--------|------|
-| Modify | `resources/js/Layouts/AppLayout.jsx` |
+| Full replacement | `tests/Feature/MaterialControllerTest.php` |
 
-No other files change. Starting/stopping the timer is done from the project detail page (Task 07); this task is display-only.
+No other files change. TASK-01 and TASK-02 must be complete before this test file can pass (they implement the actual controller logic and model methods being tested).
 
 ---
 
-## 3. `activeTimer` Prop Shape
+## 3. Prerequisite State (post TASK-01 + TASK-02)
 
-Task 03 adds `activeTimer` to `HandleInertiaRequests::share()`. When a timer is running, the shape is:
+Before these tests can pass, the following must be in place:
 
-```js
+**From TASK-01 (`MaterialController`):**
+- `index()` — returns `Inertia::render('Materials/Index', ['materials', 'filters', 'categories', 'suppliers'])` with Scout search + category/supplier `when()` filters
+- `create()` — returns `Inertia::render('Materials/Create', ['units', 'categories', 'suppliers'])`
+- `store(StoreMaterialRequest)` — creates record, redirects to `materials.show`
+- `show(Material)` — returns `Inertia::render('Materials/Show', ['material'])`
+- `edit(Material)` — returns `Inertia::render('Materials/Edit', ['material', 'units', 'categories', 'suppliers'])`
+- `update(UpdateMaterialRequest, Material)` — updates record, redirects to `materials.show`
+- `destroy(Material)` — soft-deletes, redirects to `materials.index`
+- `routes/web.php`: `Route::resource('materials', MaterialController::class)` (destroy route added, `.except(['destroy'])` removed)
+
+**From TASK-02 (`Material` model + `adjustStock` method):**
+- `adjustQuantity(float $delta): void` — updates `quantity_on_hand`, never below 0, auto-saves
+- `adjustStock(AdjustStockRequest, Material)` controller method — calls `$material->adjustQuantity($delta)`, redirects to `materials.show`
+- `scopeLowStock(Builder $query): Builder` — `whereNotNull('low_stock_threshold')->whereColumn('quantity_on_hand', '<=', 'low_stock_threshold')`
+
+**Current stub state (must NOT be tested against):** The current `MaterialController` stubs return `redirect()->back()` and pass no data to Inertia views. Running these tests against the current code will produce failures — that is expected and correct.
+
+---
+
+## 4. Class Structure
+
+```php
+<?php
+
+namespace Tests\Feature;
+
+use App\Enums\MaterialUnit;
+use App\Models\Material;
+use App\Models\MaterialCategory;
+use App\Models\Supplier;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+
+class MaterialControllerTest extends TestCase
 {
-  id:            "01hx...",          // ULID of the TimeEntry
-  project_id:    "01hx...",          // ULID of the Project
-  project_slug:  "kitchen-island",   // slug for URL navigation
-  project_title: "Kitchen Island",   // human-readable project name
-  started_at:    "2026-03-03T14:22:00.000000Z"  // ISO 8601 UTC string
+    use RefreshDatabase;
+
+    private User $user;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->user = User::factory()->create();
+    }
+
+    // ... 20 #[Test] methods
 }
 ```
-
-When no timer is running (user not authenticated, or no open `TimeEntry`): `activeTimer` is `null`.
 
 ---
 
-## 4. Component Design: `TimerWidget`
+## 5. Test-by-Test Specification
 
-Extract a `TimerWidget` function component defined at the top of the file (above `AppLayout`) or in `resources/js/Components/TimerWidget.jsx`. Given this is small (under 60 lines) and only used by `AppLayout`, defining it in the same file is preferred — it avoids a new file and keeps related code together.
+### 5.1 Auth / Access
 
-### Props
+**Test 1: `guest_is_redirected_from_materials`**
 
-`TimerWidget` receives no props. It reads `activeTimer` directly from `usePage().props.activeTimer`. This avoids prop-drilling and ensures both the desktop and mobile renders stay synchronized with Inertia's shared state.
+```php
+#[Test]
+public function guest_is_redirected_from_materials(): void
+{
+    $response = $this->get('/materials');
 
-### State
-
-```js
-const [elapsed, setElapsed] = useState(0); // milliseconds
-```
-
-`elapsed` represents how many milliseconds have passed since `activeTimer.started_at`. It is computed as `Date.now() - new Date(activeTimer.started_at).getTime()` on each tick.
-
-### Effect
-
-```js
-useEffect(() => {
-    if (!activeTimer) {
-        setElapsed(0);
-        return;
-    }
-
-    // Compute initial elapsed immediately (avoids 1-second lag on mount)
-    const startMs = new Date(activeTimer.started_at).getTime();
-    setElapsed(Date.now() - startMs);
-
-    const id = setInterval(() => {
-        setElapsed(Date.now() - startMs);
-    }, 1000);
-
-    return () => clearInterval(id);
-}, [activeTimer]);
-```
-
-Key decisions:
-- `activeTimer` is the dependency: the effect restarts whenever the active timer changes (e.g., user stops one timer and starts another — Inertia pushes a new `activeTimer` prop and the effect re-runs with the new `started_at`).
-- The initial `setElapsed` call before `setInterval` prevents a 1-second blank/zero display on mount.
-- Cleanup via `clearInterval(id)` ensures no memory leak on unmount or when `activeTimer` becomes null.
-- `startMs` is computed once per effect run (not on every tick) for efficiency.
-
-### Format Function
-
-```js
-function formatElapsed(ms) {
-    const totalSeconds = Math.floor(ms / 1000);
-    const h = Math.floor(totalSeconds / 3600);
-    const m = Math.floor((totalSeconds % 3600) / 60);
-    const s = totalSeconds % 60;
-    return [h, m, s]
-        .map((v) => String(v).padStart(2, '0'))
-        .join(':');
+    $response->assertRedirect('/login');
 }
 ```
 
-This produces `HH:MM:SS` using pure vanilla JS — no date libraries needed.
+No `actingAs` — the unauthenticated hit must redirect to `/login`. The existing placeholder used `assertRedirect()` without a target; the replacement pins it to `/login` to match the governance rule and the pattern in `ProjectControllerTest`.
 
-- When `elapsed = 0`: outputs `00:00:00`
-- When `elapsed = 3723000` (1h 2m 3s): outputs `01:02:03`
-- When `elapsed = 36000000` (10h): outputs `10:00:00`
+---
 
-### Click Handler
+### 5.2 Index
 
-When `activeTimer` is set, the widget is clickable. Clicking navigates to the project's show page:
+**Test 2: `authenticated_user_can_view_materials_index`**
 
-```js
-const handleClick = () => {
-    if (activeTimer) {
-        router.visit('/projects/' + activeTimer.project_slug);
-    }
-};
-```
+```php
+#[Test]
+public function authenticated_user_can_view_materials_index(): void
+{
+    $response = $this->actingAs($this->user)->get('/materials');
 
-### Render Logic
-
-```jsx
-function TimerWidget() {
-    const { activeTimer } = usePage().props;
-    const [elapsed, setElapsed] = useState(0);
-
-    useEffect(() => {
-        if (!activeTimer) {
-            setElapsed(0);
-            return;
-        }
-        const startMs = new Date(activeTimer.started_at).getTime();
-        setElapsed(Date.now() - startMs);
-        const id = setInterval(() => {
-            setElapsed(Date.now() - startMs);
-        }, 1000);
-        return () => clearInterval(id);
-    }, [activeTimer]);
-
-    const isRunning = Boolean(activeTimer);
-    const display = formatElapsed(elapsed);
-
-    if (isRunning) {
-        return (
-            <button
-                type="button"
-                onClick={() => router.visit('/projects/' + activeTimer.project_slug)}
-                className="flex items-center space-x-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 transition-colors hover:bg-amber-100"
-                title={`Timer running: ${activeTimer.project_title}`}
-            >
-                <svg
-                    className="h-4 w-4 text-amber-600"
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                >
-                    <circle cx="12" cy="12" r="10" />
-                    <polyline points="12 6 12 12 16 14" />
-                </svg>
-                <span className="font-mono text-sm font-medium text-amber-700">
-                    {display}
-                </span>
-            </button>
-        );
-    }
-
-    return (
-        <div className="flex items-center space-x-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5">
-            <svg
-                className="h-4 w-4 text-gray-500"
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <circle cx="12" cy="12" r="10" />
-                <polyline points="12 6 12 12 16 14" />
-            </svg>
-            <span className="font-mono text-sm font-medium text-gray-700">
-                00:00:00
-            </span>
-        </div>
+    $response->assertOk();
+    $response->assertInertia(fn ($page) => $page
+        ->component('Materials/Index')
+        ->has('materials')
+        ->has('filters')
+        ->has('categories')
+        ->has('suppliers')
     );
 }
 ```
 
-The idle state renders a plain `<div>` (non-interactive), preserving the existing desktop widget appearance (same Tailwind classes already in the file). The running state swaps to a `<button>` with amber colors and a `title` attribute showing the project name for accessibility.
+Checks all four props promised by the TASK-01 spec. No materials need to be created — the paginator can be empty.
 
 ---
 
-## 5. Changes to AppLayout.jsx
+**Test 3: `index_filters_by_category`**
 
-### Imports
+```php
+#[Test]
+public function index_filters_by_category(): void
+{
+    $catA = MaterialCategory::factory()->create();
+    $catB = MaterialCategory::factory()->create();
 
-Add `useEffect` and `useState` to the existing React import (they are not currently imported):
+    Material::factory()->create(['category_id' => $catA->id, 'name' => 'Oak Board']);
+    Material::factory()->create(['category_id' => $catB->id, 'name' => 'Pine Plank']);
 
-```js
-import { useState, useEffect } from 'react';
-```
+    $response = $this->actingAs($this->user)
+        ->get('/materials?category=' . $catA->id);
 
-`usePage` and `router` are already imported from `@inertiajs/react` on line 1.
-
-### Add `formatElapsed` and `TimerWidget` above `AppLayout`
-
-Insert the `formatElapsed` function and `TimerWidget` component definition after the existing imports and before the `navLinks` array (or after it — before `AppLayout`).
-
-### Replace Desktop Timer Placeholder
-
-Current (lines 74-92):
-```jsx
-{/* Timer Widget Placeholder */}
-<div className="flex items-center space-x-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5">
-    <svg
-        className="h-4 w-4 text-gray-500"
-        ...
-    >
-        <circle cx="12" cy="12" r="10" />
-        <polyline points="12 6 12 12 16 14" />
-    </svg>
-    <span className="font-mono text-sm font-medium text-gray-700">
-        00:00:00
-    </span>
-</div>
-```
-
-Replacement:
-```jsx
-{/* Timer Widget */}
-<TimerWidget />
-```
-
-### Replace Mobile Timer Placeholder
-
-Current (lines 146-149):
-```jsx
-{/* Timer Widget (mobile) */}
-<span className="font-mono text-sm font-medium text-gray-700">
-    00:00:00
-</span>
-```
-
-Replacement:
-```jsx
-{/* Timer Widget (mobile) */}
-<TimerWidget />
-```
-
-Both mobile and desktop render the same `<TimerWidget />` component. Each instance maintains its own `elapsed` state and its own `setInterval`, but since both compute from the same `activeTimer.started_at` value provided by Inertia, they tick in sync. The maximum drift between instances is sub-millisecond (both read `Date.now()` independently on each tick, but both fire within the same 1000ms window).
-
----
-
-## 6. Complete Resulting File
-
-After modifications, `AppLayout.jsx` will be structured as:
-
-```
-import { Link, Head, router, usePage } from '@inertiajs/react';
-import { useState, useEffect } from 'react';
-
-const navLinks = [ ... ];         // unchanged
-
-function isActive(...) { ... }   // unchanged
-
-function formatElapsed(ms) { ... }  // NEW
-
-function TimerWidget() { ... }      // NEW
-
-export default function AppLayout({ children, title }) {
-    // ... unchanged body ...
-    // Desktop: <TimerWidget />  (replaces static div)
-    // Mobile:  <TimerWidget />  (replaces static span)
+    $response->assertOk();
+    $response->assertInertia(fn ($page) => $page
+        ->component('Materials/Index')
+        ->has('materials.data', 1)
+        ->where('materials.data.0.name', 'Oak Board')
+    );
 }
 ```
 
----
-
-## 7. Key Decisions
-
-### Decision 1: `TimerWidget` in the same file, not a separate component file
-
-The component is small (~60 lines), used only by `AppLayout`, and has no independent reusability. Keeping it in `AppLayout.jsx` avoids a new file and keeps all layout-nav concerns in one place. The governance rule is to use `resources/js/Components/` for shared components — `TimerWidget` is not shared across pages, so it does not belong there.
-
-If future tasks need to render this widget elsewhere, it can be extracted to `resources/js/Components/TimerWidget.jsx` without breaking changes (just update the import in `AppLayout.jsx`).
-
-### Decision 2: `usePage()` called inside `TimerWidget`, not passed as a prop
-
-`TimerWidget` calls `usePage()` directly. This is idiomatic Inertia.js — shared props are designed to be read via `usePage()` anywhere in the tree. The alternative (passing `activeTimer` as a prop from `AppLayout`) would require `AppLayout` to read it and pass it down, adding prop-drilling for no benefit. Direct `usePage()` access also ensures both instances see the same prop value simultaneously when Inertia re-renders after navigation.
-
-### Decision 3: `activeTimer` as the single `useEffect` dependency
-
-The effect depends only on `activeTimer` (the object reference from Inertia). When Inertia does a full-page visit, all components re-mount and the effect re-runs naturally. When Inertia does a partial Inertia visit that updates `activeTimer` (e.g., stopping a timer from the project page), Inertia updates the shared props and React re-renders `TimerWidget`. The effect sees that `activeTimer` changed (new object reference or changed from non-null to null), clears the old interval, and starts a new one (or bails out if null).
-
-### Decision 4: Elapsed time computed from `Date.now()` minus `started_at` on every tick
-
-The alternative (incrementing a counter by 1000ms per tick) drifts over time because `setInterval` is not precise — it fires approximately every 1000ms but can be delayed by CPU load, browser throttling, etc. Computing `Date.now() - startMs` on every tick anchors to wall-clock time and self-corrects, ensuring the displayed time is always accurate to within one second.
-
-### Decision 5: `started_at` is an ISO 8601 UTC string from the server
-
-`new Date(activeTimer.started_at)` parses ISO 8601 strings correctly in all modern browsers. The spec states `started_at` comes from a MySQL `timestamp` column, which Inertia serializes as an ISO 8601 string in UTC (e.g., `"2026-03-03T14:22:00.000000Z"`). No timezone conversion is needed — `Date.now()` is also UTC. The difference is always correct regardless of the user's local timezone.
-
-### Decision 6: Idle widget renders a `<div>`, running widget renders a `<button>`
-
-Using a `<button>` for the interactive state follows semantic HTML and accessibility best practices — buttons are keyboard-navigable and trigger `onClick` on Enter. Using a `<div>` with `onClick` for the idle state would be wrong; the idle widget is non-interactive by spec, so `<div>` is correct and needs no `role` or `tabIndex`.
-
-### Decision 7: Both desktop and mobile use `<TimerWidget />` with the same amber styling
-
-The spec says both locations show the widget. The desktop location is a styled box (border, background). The mobile location is currently a plain `<span>`. After this change, both will render the full `<TimerWidget />` including the SVG clock icon and proper idle/running styles. The mobile location is inside `flex items-center space-x-3`, so the widget box will render inline correctly. This is a minor improvement over the current mobile implementation (which lacked the icon and box styling).
+Creates two materials in different categories. Filters by `$catA->id`. The Inertia assertion confirms exactly one result is returned and it is the correct record. This pattern mirrors `projects_index_filters_by_status` in `ProjectControllerTest`.
 
 ---
 
-## 8. Verified Dependencies
+**Test 4: `index_filters_by_supplier`**
 
-| Requirement | Status |
-|-------------|--------|
-| `usePage` imported from `@inertiajs/react` | Already in `AppLayout.jsx` line 1 |
-| `router` imported from `@inertiajs/react` | Already in `AppLayout.jsx` line 1 |
-| `useState` from React | Not yet imported — must add to import |
-| `useEffect` from React | Not yet imported — must add to import |
-| `activeTimer` shared prop from `HandleInertiaRequests` | Added in Task 03 (dependency) |
-| `activeTimer.started_at` is an ISO 8601 UTC string | Confirmed from Task 03 spec: MySQL `timestamp` column |
-| `activeTimer.project_slug` exists on the shared prop | Confirmed from Task 03 AC: `{ id, project_id, project_slug, project_title, started_at }` |
-| No new npm packages | Confirmed — only React and Inertia built-ins used |
+```php
+#[Test]
+public function index_filters_by_supplier(): void
+{
+    $supplierA = Supplier::factory()->create();
+    $supplierB = Supplier::factory()->create();
 
----
+    Material::factory()->create(['supplier_id' => $supplierA->id, 'name' => 'Red Oak']);
+    Material::factory()->create(['supplier_id' => $supplierB->id, 'name' => 'White Oak']);
 
-## 9. Risks
+    $response = $this->actingAs($this->user)
+        ->get('/materials?supplier=' . $supplierA->id);
 
-### Risk 1: Task 03 not yet complete — `activeTimer` not yet in shared props
-
-**Risk:** If Task 03 has not been implemented, `usePage().props.activeTimer` will be `undefined`, not `null`. The check `if (!activeTimer)` handles both `null` and `undefined`, so the widget will safely render idle. No crash will occur.
-
-**Mitigation:** The `if (!activeTimer)` guard in the `useEffect` and the `Boolean(activeTimer)` check in the render handle `undefined` gracefully. When Task 03 is complete, no changes are needed to Task 08's code.
-
-### Risk 2: Clock SVG icon renders at wrong size on mobile
-
-**Risk:** The current mobile timer placeholder is a plain `<span>` with no icon. After this change, the mobile location renders the full `<TimerWidget />` including the SVG clock. Inside `flex items-center space-x-3 sm:hidden`, the box may be slightly taller than before, potentially shifting the hamburger button.
-
-**Mitigation:** The `TimerWidget` uses `py-1.5` padding (same as desktop). The mobile container already uses `flex items-center` which centers vertically. Visual regression is minimal. If needed, a reviewer can apply `sm:hidden` responsive variants or reduce padding for mobile in a follow-up.
-
-### Risk 3: `setInterval` firing after component unmount
-
-**Risk:** If `TimerWidget` unmounts (e.g., full page navigation away from an Inertia-rendered page) while the interval is running, a memory leak or state update on an unmounted component warning could occur.
-
-**Mitigation:** The `useEffect` cleanup function `return () => clearInterval(id)` runs on unmount, clearing the interval. React 19 enforces this strictly, so the cleanup is sufficient.
-
-### Risk 4: `started_at` value from server is in the future (clock skew)
-
-**Risk:** If the server clock is ahead of the client clock, `Date.now() - startMs` will be negative. `formatElapsed` would compute a negative `totalSeconds`, producing a negative display like `-00:00:01`.
-
-**Mitigation:** Add `Math.max(0, ms)` inside `formatElapsed`:
-
-```js
-function formatElapsed(ms) {
-    const totalSeconds = Math.floor(Math.max(0, ms) / 1000);
-    ...
+    $response->assertOk();
+    $response->assertInertia(fn ($page) => $page
+        ->component('Materials/Index')
+        ->has('materials.data', 1)
+        ->where('materials.data.0.name', 'Red Oak')
+    );
 }
 ```
 
-This clamps negative elapsed time to zero, showing `00:00:00` until the clocks align.
+Same two-record pattern as Test 3, filtering on `supplier_id`.
 
 ---
 
-## 10. Acceptance Criteria Coverage
+**Test 5: `index_search_returns_materials`**
 
-| Criterion | How Met |
-|-----------|---------|
-| Read `activeTimer` from `usePage().props.activeTimer` | `TimerWidget` calls `const { activeTimer } = usePage().props` |
-| When null: display 00:00:00 in gray, non-interactive | `isRunning = false` branch renders a `<div>` with gray text |
-| When set: tick up every second using setInterval/useEffect | `useEffect` with `setInterval(1000)` computing `Date.now() - startMs` |
-| Compute from `activeTimer.started_at` | `const startMs = new Date(activeTimer.started_at).getTime()` |
-| Format HH:MM:SS | `formatElapsed(ms)` with `padStart(2, '0')` and join with `:` |
-| Amber color when running | `text-amber-700`, `border-amber-300`, `bg-amber-50` on running button |
-| Clicking while running navigates to project | `router.visit('/projects/' + activeTimer.project_slug)` in `onClick` |
-| setInterval cleared on null/unmount | `useEffect` returns `() => clearInterval(id)` |
-| Works in both desktop and mobile locations | Both locations replaced with `<TimerWidget />` |
-| No extra npm packages | Only `useState`, `useEffect` (React), `usePage`, `router` (Inertia) |
+```php
+#[Test]
+public function index_search_returns_materials(): void
+{
+    Material::factory()->create(['name' => 'Baltic Birch Plywood']);
+    Material::factory()->create(['name' => 'Red Oak Board']);
+
+    $response = $this->actingAs($this->user)
+        ->get('/materials?search=Baltic');
+
+    $response->assertOk();
+}
+```
+
+Scout with the database driver performs a SQL `LIKE` search. The test confirms a 200 response when a `search` param is passed. A deeper assertion (count) is avoided here because Scout's database driver behavior with `RefreshDatabase` and the `LIKE` matching on the `name` column is implementation-dependent — asserting `assertOk()` confirms the search code path does not throw. This aligns with the `projects_index_filters_by_search` pattern in `ProjectControllerTest`.
+
+---
+
+### 5.3 Create
+
+**Test 6: `create_page_returns_units_categories_and_suppliers`**
+
+```php
+#[Test]
+public function create_page_returns_units_categories_and_suppliers(): void
+{
+    $response = $this->actingAs($this->user)->get('/materials/create');
+
+    $response->assertOk();
+    $response->assertInertia(fn ($page) => $page
+        ->component('Materials/Create')
+        ->has('units')
+        ->has('categories')
+        ->has('suppliers')
+    );
+}
+```
+
+Confirms all three option arrays are passed. The `units` array comes from `MaterialUnit::cases()` mapped to `[value, label]` pairs.
+
+---
+
+### 5.4 Store
+
+**Test 7: `store_creates_material_and_redirects_to_show`**
+
+```php
+#[Test]
+public function store_creates_material_and_redirects_to_show(): void
+{
+    $response = $this->actingAs($this->user)->post('/materials', [
+        'name'             => 'Walnut Lumber',
+        'unit'             => 'board_foot',
+        'quantity_on_hand' => 10.00,
+    ]);
+
+    $this->assertDatabaseHas('materials', ['name' => 'Walnut Lumber']);
+
+    $material = Material::where('name', 'Walnut Lumber')->first();
+    $response->assertRedirect(route('materials.show', $material));
+}
+```
+
+Uses the minimum required fields per `StoreMaterialRequest` rules (`name` required, `unit` required with `Rule::enum(MaterialUnit::class)`, `quantity_on_hand` required). Checks the DB record exists and the redirect goes to `materials.show`.
+
+---
+
+**Test 8: `store_requires_name`**
+
+```php
+#[Test]
+public function store_requires_name(): void
+{
+    $response = $this->actingAs($this->user)->post('/materials', [
+        'unit'             => 'piece',
+        'quantity_on_hand' => 0,
+    ]);
+
+    $response->assertSessionHasErrors(['name']);
+}
+```
+
+Omits `name`; confirms validation fires on `name`. No `assertStatus(422)` per governance rules.
+
+---
+
+**Test 9: `store_requires_unit`**
+
+```php
+#[Test]
+public function store_requires_unit(): void
+{
+    $response = $this->actingAs($this->user)->post('/materials', [
+        'name'             => 'Some Wood',
+        'quantity_on_hand' => 0,
+    ]);
+
+    $response->assertSessionHasErrors(['unit']);
+}
+```
+
+Omits `unit`; confirms `unit` is required.
+
+---
+
+**Test 10: `store_rejects_invalid_unit_value`**
+
+```php
+#[Test]
+public function store_rejects_invalid_unit_value(): void
+{
+    $response = $this->actingAs($this->user)->post('/materials', [
+        'name'             => 'Some Wood',
+        'unit'             => 'invalid',
+        'quantity_on_hand' => 0,
+    ]);
+
+    $response->assertSessionHasErrors(['unit']);
+}
+```
+
+The `unit` field uses `Rule::enum(MaterialUnit::class)` which rejects any value not in the enum's string values. `'invalid'` is not a valid `MaterialUnit` case.
+
+---
+
+### 5.5 Show
+
+**Test 11: `show_returns_material_with_component`**
+
+```php
+#[Test]
+public function show_returns_material_with_component(): void
+{
+    $material = Material::factory()->create();
+
+    $response = $this->actingAs($this->user)
+        ->get('/materials/' . $material->id);
+
+    $response->assertOk();
+    $response->assertInertia(fn ($page) => $page
+        ->component('Materials/Show')
+        ->has('material')
+    );
+}
+```
+
+Route model binding uses ULID (not slug — Materials use ULID binding per CLAUDE.md). The test accesses `/materials/{material->id}` which resolves via the `HasUlids` trait.
+
+---
+
+### 5.6 Edit
+
+**Test 12: `edit_returns_material_with_options`**
+
+```php
+#[Test]
+public function edit_returns_material_with_options(): void
+{
+    $material = Material::factory()->create();
+
+    $response = $this->actingAs($this->user)
+        ->get('/materials/' . $material->id . '/edit');
+
+    $response->assertOk();
+    $response->assertInertia(fn ($page) => $page
+        ->component('Materials/Edit')
+        ->has('material')
+        ->has('units')
+        ->has('categories')
+        ->has('suppliers')
+    );
+}
+```
+
+Confirms all four props (`material`, `units`, `categories`, `suppliers`) are present.
+
+---
+
+### 5.7 Update
+
+**Test 13: `update_saves_changes_and_redirects_to_show`**
+
+```php
+#[Test]
+public function update_saves_changes_and_redirects_to_show(): void
+{
+    $material = Material::factory()->create(['name' => 'Original Name']);
+
+    $response = $this->actingAs($this->user)
+        ->patch('/materials/' . $material->id, [
+            'name' => 'Updated Name',
+        ]);
+
+    $response->assertRedirect(route('materials.show', $material));
+    $this->assertDatabaseHas('materials', [
+        'id'   => $material->id,
+        'name' => 'Updated Name',
+    ]);
+}
+```
+
+`UpdateMaterialRequest` uses `'sometimes'` on all fields, so a partial payload with only `name` is valid. Checks both the redirect and the database state.
+
+---
+
+**Test 14: `update_with_invalid_unit_returns_error`**
+
+```php
+#[Test]
+public function update_with_invalid_unit_returns_error(): void
+{
+    $material = Material::factory()->create();
+
+    $response = $this->actingAs($this->user)
+        ->patch('/materials/' . $material->id, [
+            'unit' => 'bad',
+        ]);
+
+    $response->assertSessionHasErrors(['unit']);
+}
+```
+
+`UpdateMaterialRequest` applies `Rule::enum(MaterialUnit::class)` when `unit` is present. `'bad'` is not a valid enum value.
+
+---
+
+### 5.8 Destroy
+
+**Test 15: `destroy_soft_deletes_material`**
+
+```php
+#[Test]
+public function destroy_soft_deletes_material(): void
+{
+    $material = Material::factory()->create();
+
+    $response = $this->actingAs($this->user)
+        ->delete('/materials/' . $material->id);
+
+    $response->assertRedirect(route('materials.index'));
+    $this->assertSoftDeleted('materials', ['id' => $material->id]);
+}
+```
+
+`Material` uses `SoftDeletes` (confirmed in model). Uses `assertSoftDeleted` not `assertDatabaseMissing`. The destroy route requires TASK-01 to remove `.except(['destroy'])` from `routes/web.php`.
+
+---
+
+### 5.9 Adjust Stock
+
+**Test 16: `adjust_stock_increments_quantity`**
+
+```php
+#[Test]
+public function adjust_stock_increments_quantity(): void
+{
+    $material = Material::factory()->create([
+        'unit'             => 'piece',
+        'quantity_on_hand' => 10.00,
+    ]);
+
+    $this->actingAs($this->user)
+        ->post('/materials/' . $material->id . '/adjust', [
+            'quantity' => 5,
+        ]);
+
+    $this->assertDatabaseHas('materials', [
+        'id'               => $material->id,
+        'quantity_on_hand' => 15.00,
+    ]);
+}
+```
+
+The route is `POST /materials/{material}/adjust` named `materials.adjust-stock` (confirmed in `routes/web.php` line 45). A positive `quantity` increments `quantity_on_hand`.
+
+---
+
+**Test 17: `adjust_stock_decrements_quantity`**
+
+```php
+#[Test]
+public function adjust_stock_decrements_quantity(): void
+{
+    $material = Material::factory()->create([
+        'unit'             => 'piece',
+        'quantity_on_hand' => 10.00,
+    ]);
+
+    $this->actingAs($this->user)
+        ->post('/materials/' . $material->id . '/adjust', [
+            'quantity' => -3,
+        ]);
+
+    $this->assertDatabaseHas('materials', [
+        'id'               => $material->id,
+        'quantity_on_hand' => 7.00,
+    ]);
+}
+```
+
+A negative `quantity` decrements. `AdjustStockRequest` allows any numeric value (positive or negative) per its rules: `'numeric'` with no `min`.
+
+---
+
+**Test 18: `adjust_stock_cannot_go_below_zero`**
+
+```php
+#[Test]
+public function adjust_stock_cannot_go_below_zero(): void
+{
+    $material = Material::factory()->create([
+        'unit'             => 'piece',
+        'quantity_on_hand' => 5.00,
+    ]);
+
+    $this->actingAs($this->user)
+        ->post('/materials/' . $material->id . '/adjust', [
+            'quantity' => -100,
+        ]);
+
+    $this->assertDatabaseHas('materials', [
+        'id'               => $material->id,
+        'quantity_on_hand' => 0.00,
+    ]);
+}
+```
+
+The `adjustQuantity(float $delta)` model method uses `max(0, $this->quantity_on_hand + $delta)` to clamp the result. This test validates that clamping behavior at the database level.
+
+---
+
+**Test 19: `adjust_stock_requires_quantity`**
+
+```php
+#[Test]
+public function adjust_stock_requires_quantity(): void
+{
+    $material = Material::factory()->create();
+
+    $response = $this->actingAs($this->user)
+        ->post('/materials/' . $material->id . '/adjust', []);
+
+    $response->assertSessionHasErrors(['quantity']);
+}
+```
+
+`AdjustStockRequest` rules: `'quantity' => ['required', 'numeric']`. An empty payload must trigger `assertSessionHasErrors(['quantity'])`.
+
+---
+
+### 5.10 Low Stock Scope (model-level)
+
+**Test 20: `low_stock_scope_returns_only_materials_at_or_below_threshold`**
+
+```php
+#[Test]
+public function low_stock_scope_returns_only_materials_at_or_below_threshold(): void
+{
+    // LOW: qty 2, threshold 5 — should be returned
+    $lowMaterial = Material::factory()->create([
+        'quantity_on_hand'    => 2.00,
+        'low_stock_threshold' => 5.00,
+    ]);
+
+    // OK: qty 10, threshold 5 — above threshold, should not be returned
+    Material::factory()->create([
+        'quantity_on_hand'    => 10.00,
+        'low_stock_threshold' => 5.00,
+    ]);
+
+    // NO THRESHOLD: qty 1, no threshold set — should not be returned
+    Material::factory()->create([
+        'quantity_on_hand'    => 1.00,
+        'low_stock_threshold' => null,
+    ]);
+
+    $results = Material::lowStock()->get();
+
+    $this->assertCount(1, $results);
+    $this->assertEquals($lowMaterial->id, $results->first()->id);
+}
+```
+
+This is a direct model/scope test with no HTTP call. The scope uses `whereNotNull('low_stock_threshold')->whereColumn('quantity_on_hand', '<=', 'low_stock_threshold')`. Three materials are created to test each of the three cases. No `actingAs` is needed.
+
+---
+
+## 6. Decisions with Rationale
+
+### Decision 1: Full file replacement (not append)
+
+The task spec explicitly requires "Replace existing 4 placeholder tests with comprehensive suite." The existing tests have stale naming (`test_guest_is_redirected_from_materials` with `test_` prefix, `test_authenticated_user_can_view_materials_index` etc.) and weaker assertions. Full replacement avoids merge ambiguity and ensures all tests follow governance conventions from the start.
+
+### Decision 2: `setUp()` creates `$this->user` once per test
+
+The `ProjectControllerTest` pattern creates `$user = User::factory()->create()` at the top of each test method. The task spec requires upgrading to `setUp()` with `private User $user`. This removes ~20 lines of boilerplate across the suite and ensures consistent user state. The single `User` is sufficient — this application has no multi-tenancy or per-user data isolation that would require unique users per test.
+
+### Decision 3: Filter tests assert `has('materials.data', 1)` rather than just `assertOk()`
+
+Tests 3 and 4 (category/supplier filter) verify that the filter actually narrows results, not just that the page returns 200. The Inertia `assertInertia` closure supports dot-notation counting (`has('materials.data', 1)`), which confirms exactly one record matches. This gives real coverage without needing to inspect raw JSON. Tests 3 and 4 also name their materials distinctly (`Oak Board` vs `Pine Plank`) so the `where('materials.data.0.name', ...)` assertion is unambiguous.
+
+### Decision 4: Search test only asserts `assertOk()`, not record count
+
+Scout with the database driver performs full-text search via SQL. In test environments with `RefreshDatabase`, the search index state is identical to the database state (no separate index to sync). However, the column subset in `toSearchableArray()` (`id`, `name`, `description`, `sku`, `location`) and the Scout query behavior may return different result counts depending on the driver's internal LIKE matching. To avoid a brittle test that breaks if Scout's database driver behavior changes, the search test only confirms a 200 response, matching the `projects_index_filters_by_search` precedent in `ProjectControllerTest`.
+
+### Decision 5: Destroy test asserts `assertRedirect(route('materials.index'))` not `assertRedirect('/materials')`
+
+Using the named route helper is more robust — it stays correct if the route prefix changes. `ProjectControllerTest` uses `route('projects.index')` for the same reason.
+
+### Decision 6: Adjust stock tests use a fixed `unit => 'piece'` in the factory state
+
+The `MaterialFactory` picks a random `MaterialUnit` case by default. Tests 16–18 explicitly set `'unit' => 'piece'` to ensure the `$material->unit->label()` call in the flash message construction (from TASK-02's `adjustStock` method) is deterministic. This prevents an obscure failure if a random unit value causes an unexpected flash message or if `label()` has a branch that does not handle a case.
+
+### Decision 7: `quantity_on_hand` comparison in `assertDatabaseHas` uses PHP floats
+
+MySQL `decimal(10,2)` columns are compared as strings in PDO — the stored value `15.00` will match a PHP comparison of `15.00`. This is consistent with how `ProjectControllerTest` uses `assertDatabaseHas` for numeric fields. If the database stores `15` (no decimal), the assertion `15.00` will still pass because PDO casts decimal columns as string `"15.00"` and PHP's loose comparison handles the match. No casting in the test is needed.
+
+### Decision 8: Low stock scope test uses `assertCount` + `assertEquals` not an HTTP assertion
+
+Test 20 exercises `Material::lowStock()` as a database query scope, not an HTTP endpoint. This is explicit in the task spec: "model-level test." Using `actingAs` and an HTTP call would make the test dependent on the index route's filter implementation rather than the scope itself. Direct model testing isolates the scope behavior.
+
+---
+
+## 7. Verified Dependencies
+
+| Dependency | Status | Notes |
+|------------|--------|-------|
+| `PHPUnit\Framework\Attributes\Test` | Available | PHPUnit 11.5.55 installed |
+| `Illuminate\Foundation\Testing\RefreshDatabase` | Available | Standard Laravel 12 trait |
+| `App\Models\Material` | Exists | `app/Models/Material.php` with `HasUlids`, `SoftDeletes`, `Searchable` |
+| `App\Models\User` | Exists | `app/Models/User.php` via Breeze |
+| `App\Models\MaterialCategory` | Exists | `app/Models/MaterialCategory.php` with `HasUlids` |
+| `App\Models\Supplier` | Exists | `app/Models/Supplier.php` with `HasUlids` |
+| `App\Enums\MaterialUnit` | Exists | `app/Enums/MaterialUnit.php`, 14 cases, `label()` method |
+| `MaterialFactory` | Exists | `database/factories/MaterialFactory.php` — supports `withCategory()` and `withSupplier()` states |
+| `MaterialCategoryFactory` | Exists | `database/factories/MaterialCategoryFactory.php` |
+| `SupplierFactory` | Exists | `database/factories/SupplierFactory.php` |
+| `UserFactory` | Exists | `database/factories/UserFactory.php` |
+| Route `materials.show` | Registered | `GET /materials/{material}` |
+| Route `materials.index` | Registered | `GET /materials` |
+| Route `materials.adjust-stock` | Registered | `POST /materials/{material}/adjust` (line 45 of web.php) |
+| Route `materials.destroy` | **Not yet registered** | Current `web.php` has `.except(['destroy'])` — TASK-01 must remove this |
+| `StoreMaterialRequest` | Exists | Requires `name` (required), `unit` (required, enum), `quantity_on_hand` (required) |
+| `UpdateMaterialRequest` | Exists | All fields `'sometimes'`; `unit` validated with `Rule::enum(MaterialUnit::class)` when present |
+| `AdjustStockRequest` | Exists | Requires `quantity` (numeric, required); `notes` optional |
+| `Material::adjustQuantity()` | **Not yet exists** | Added by TASK-02 — clamps to 0 via `max(0, ...)` |
+| `Material::scopeLowStock()` | **Not yet exists** | Added by TASK-02 |
+| `inertiajs/inertia-laravel` v2.0.21 | Installed | Provides `assertInertia()` test helper |
+
+---
+
+## 8. Risks
+
+### Risk 1: TASK-01 destroy route not yet enabled
+
+**Risk:** `routes/web.php` currently has `Route::resource('materials', MaterialController::class)->except(['destroy'])`. Test 15 (`destroy_soft_deletes_material`) will receive a 404 until TASK-01 removes `.except(['destroy'])`.
+
+**Mitigation:** The plan documents this as a known pre-condition. The test itself is correct; it will fail only if TASK-01 is incomplete. Running `php artisan route:list | grep materials` before executing the test suite will confirm whether the destroy route is registered.
+
+### Risk 2: Scout database driver search behaves differently under test
+
+**Risk:** Scout's database driver may not find records created within the same transaction as `RefreshDatabase` wraps tests in, depending on the driver's index synchronization timing.
+
+**Mitigation:** Test 5 only asserts `assertOk()`, not a record count. This matches the pattern used for the project search test. If Scout causes a 500 error (which would be a real bug), the test catches it via the 200 assertion.
+
+### Risk 3: `assertDatabaseHas` decimal comparison on MySQL
+
+**Risk:** MySQL `decimal(10,2)` stores `15.00` which PDO returns as the string `"15.00"`. PHP's `assertDatabaseHas` uses strict comparison internally. If the stored value has more decimal places than expected (e.g., rounding error in `max(0, ...)` calculation), the assertion could fail.
+
+**Mitigation:** The `adjustQuantity()` spec from TASK-02 uses `max(0, $this->quantity_on_hand + $delta)` which produces standard PHP float arithmetic. For the test values chosen (10, 5, -3, -100), the results (15, 7, 0) are all exact integers with no floating-point precision issues. The decimal comparison `15.00` is safe.
+
+### Risk 4: Filter tests fail if `MaterialCategoryFactory` generates duplicate names
+
+**Risk:** `MaterialCategoryFactory` uses `fake()->randomElement(['Hardwood', 'Softwood', ...])` — a small pool of 6 values. With `RefreshDatabase`, there is a chance both categories in Test 3 get the same name and the filter still works, but the `has('materials.data', 1)` count assertion could be fragile if not both categories are distinct IDs.
+
+**Mitigation:** The filter is on `category_id` (the ULID primary key), not `name`. Two `MaterialCategory::factory()->create()` calls always produce two distinct records with distinct ULIDs. The name duplication does not affect the test outcome because filtering by `$catA->id` (the ULID) is precise.
+
+### Risk 5: `unit => 'piece'` in factory state overrides the enum cast
+
+**Risk:** Setting `'unit' => 'piece'` (a string) on `Material::factory()->create([...])` must survive the model's enum cast (`'unit' => MaterialUnit::class` in `casts()`).
+
+**Mitigation:** Laravel's `HasFactory` passes the array through `fill()`, which applies the cast. `MaterialUnit::Piece` has the backing value `'piece'`, so the string `'piece'` is a valid input for the cast. This is the same pattern the `MaterialFactory` already uses (`fake()->randomElement(MaterialUnit::cases())->value`).
+
+---
+
+## 9. Acceptance Criteria Coverage
+
+| Criterion from Task Spec | Test(s) | Assertion Used |
+|--------------------------|---------|----------------|
+| guest_is_redirected_from_materials | Test 1 | `assertRedirect('/login')` |
+| authenticated_user_can_view_materials_index — has materials/filters/categories/suppliers | Test 2 | `assertInertia` with 4 `has()` calls |
+| index_filters_by_category | Test 3 | `assertInertia` + `has('materials.data', 1)` |
+| index_filters_by_supplier | Test 4 | `assertInertia` + `has('materials.data', 1)` |
+| index_search_returns_materials | Test 5 | `assertOk()` |
+| create_page_returns_units_categories_and_suppliers | Test 6 | `assertInertia` with `has('units')`, `has('categories')`, `has('suppliers')` |
+| store_creates_material_and_redirects_to_show | Test 7 | `assertDatabaseHas` + `assertRedirect(route('materials.show', ...))` |
+| store_requires_name | Test 8 | `assertSessionHasErrors(['name'])` |
+| store_requires_unit | Test 9 | `assertSessionHasErrors(['unit'])` |
+| store_rejects_invalid_unit_value | Test 10 | `assertSessionHasErrors(['unit'])` |
+| show_returns_material_with_component | Test 11 | `assertInertia` with component + `has('material')` |
+| edit_returns_material_with_options | Test 12 | `assertInertia` with `has('material')`, `has('units')`, `has('categories')`, `has('suppliers')` |
+| update_saves_changes_and_redirects_to_show | Test 13 | `assertDatabaseHas` + `assertRedirect(route('materials.show', ...))` |
+| update_with_invalid_unit_returns_error | Test 14 | `assertSessionHasErrors(['unit'])` |
+| destroy_soft_deletes_material | Test 15 | `assertSoftDeleted('materials', ['id' => ...])` + `assertRedirect(route('materials.index'))` |
+| adjust_stock_increments_quantity (10 + 5 = 15) | Test 16 | `assertDatabaseHas` with `quantity_on_hand => 15.00` |
+| adjust_stock_decrements_quantity (10 - 3 = 7) | Test 17 | `assertDatabaseHas` with `quantity_on_hand => 7.00` |
+| adjust_stock_cannot_go_below_zero (5 - 100 = 0) | Test 18 | `assertDatabaseHas` with `quantity_on_hand => 0.00` |
+| adjust_stock_requires_quantity | Test 19 | `assertSessionHasErrors(['quantity'])` |
+| low_stock_scope_returns_only_materials_at_or_below_threshold | Test 20 | `assertCount(1, ...)` + `assertEquals($lowMaterial->id, ...)` |
+
+All 20 required tests are covered. No hardcoded IDs — all records created via factories. No `assertStatus(422)` — all validation tests use `assertSessionHasErrors`. Soft delete uses `assertSoftDeleted`. `RefreshDatabase` and `#[Test]` attributes are applied throughout.
+
+---
+
+## 10. Run Command
+
+```bash
+./vendor/bin/sail artisan test --filter=MaterialControllerTest
+```
+
+All 20 tests are expected to pass once TASK-01 and TASK-02 are complete.

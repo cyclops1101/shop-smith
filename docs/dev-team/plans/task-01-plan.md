@@ -1,6 +1,6 @@
-# Task 01 Plan: Project CRUD Backend
+# TASK-01: MaterialController CRUD Implementation Plan
 
-**Task ID:** 01
+**Task ID:** TASK-01
 **Domain:** backend
 **Complexity:** medium
 **Status:** pending
@@ -9,13 +9,14 @@
 
 ## 1. Approach
 
-All seven CRUD methods on `ProjectController` are currently stubs. The implementation strategy is:
+Replace all stub methods in `MaterialController` with working implementations and expose the `destroy` route. All methods follow the established project conventions: fat models, thin controllers, form-request validation, Scout search, and Inertia responses.
 
-1. Read the validated data from the two existing Form Requests without touching them.
-2. Implement each controller method in one focused edit to `ProjectController.php`.
-3. Expand the existing `ProjectControllerTest.php` with full coverage tests using PHPUnit 11 `#[Test]` attributes.
+The implementation strategy is:
 
-The controller stays thin. Filtering and search logic live in the query chain in `index()` using Eloquent scopes and Scout — no service class is needed at this scope. Flash messages use Laravel's `with()` on the redirect. No new files are created beyond the plan document.
+1. Update `routes/web.php` — remove `.except(['destroy'])` from the materials resource route so the `DELETE /materials/{material}` route is registered.
+2. Rewrite `app/Http/Controllers/MaterialController.php` — replace all 7 stub methods with real implementations using the correct imports, form requests, eager loading, and Scout search pattern already established in `ProjectController`.
+
+No new classes, services, migrations, or factories are required. All dependencies already exist.
 
 ---
 
@@ -23,332 +24,380 @@ The controller stays thin. Filtering and search logic live in the query chain in
 
 | File | Action | Reason |
 |------|--------|--------|
-| `app/Http/Controllers/ProjectController.php` | Modify | Replace all 7 stub methods with real implementations |
-| `tests/Feature/ProjectControllerTest.php` | Modify | Add complete test coverage for all 7 methods |
+| `routes/web.php` | Modify line 42 | Remove `.except(['destroy'])` to register the destroy route |
+| `app/Http/Controllers/MaterialController.php` | Modify | Replace all 7 stub methods; update import block; add 3 private helpers |
 
-No new files are created. `StoreProjectRequest`, `UpdateProjectRequest`, `Project`, `ProjectStatus`, and `ProjectPriority` are all read-only dependencies that are already correct.
+No new files are created. All form requests, enums, models, and Inertia page components already exist.
 
 ---
 
-## 3. Implementation Detail
+## 3. Route Change
 
-### 3.1 Imports to Add to ProjectController
-
-The current import block covers `Project`, `TimeEntry`, `Request`, `Inertia`, `Response`, and `RedirectResponse`. The implementation needs two additional imports:
+**Current (line 42 of `routes/web.php`):**
 
 ```php
-use App\Enums\ProjectPriority;
-use App\Enums\ProjectStatus;
-use App\Http\Requests\StoreProjectRequest;
-use App\Http\Requests\UpdateProjectRequest;
+Route::resource('materials', MaterialController::class)->except(['destroy']);
 ```
 
-`Request` can be removed from the imports once all stub signatures that typed it are replaced — `store()` and `update()` will use the typed Form Request classes instead.
+**Replace with:**
 
-### 3.2 index()
+```php
+Route::resource('materials', MaterialController::class);
+```
+
+**Rationale:** The task spec requires the `destroy` route. The `Material` model uses `SoftDeletes`, so `$material->delete()` sets `deleted_at` and does not remove the row. Registering the route enables the `DELETE /materials/{material}` endpoint without altering the existing `materials.adjust-stock` sub-resource route directly below it.
+
+---
+
+## 4. Import Block
+
+The current import block in `MaterialController.php` contains only:
+
+```php
+use App\Models\Material;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Inertia\Inertia;
+use Inertia\Response;
+```
+
+The following imports must be added:
+
+```php
+use App\Enums\MaterialUnit;
+use App\Http\Requests\AdjustStockRequest;
+use App\Http\Requests\StoreMaterialRequest;
+use App\Http\Requests\UpdateMaterialRequest;
+use App\Models\MaterialCategory;
+use App\Models\Supplier;
+```
+
+`Request` and `AdjustStockRequest` remain present because `adjustStock()` still uses them (it is out of scope for this task but must not be broken).
+
+---
+
+## 5. Private Helper Methods
+
+To avoid duplicating three identical queries between `create()` and `edit()`, three private methods are added:
+
+```php
+private function unitOptions(): array
+{
+    return collect(MaterialUnit::cases())
+        ->map(fn ($u) => ['value' => $u->value, 'label' => $u->label()])
+        ->all();
+}
+
+private function categoryOptions()
+{
+    return MaterialCategory::orderBy('sort_order')->get(['id', 'name']);
+}
+
+private function supplierOptions()
+{
+    return Supplier::orderBy('name')->get(['id', 'name']);
+}
+```
+
+**Rationale:**
+- `unitOptions()` maps the `MaterialUnit` enum to `{value, label}` pairs. The frontend `<select>` needs a human-readable label alongside the raw string value used for form submission. Calling `label()` on the PHP side avoids shipping a mapping table to the frontend.
+- `categoryOptions()` orders by `sort_order` — the column exists in the `material_categories` migration (`integer, default 0`) and is the appropriate display order for woodworking categories (e.g., Hardwood before Hardware).
+- `supplierOptions()` orders alphabetically by `name`. Only `id` and `name` columns are selected to reduce payload size.
+- Both reference data queries are the same in `create()` and `edit()`. Private helpers prevent duplication with no meaningful abstraction overhead.
+
+---
+
+## 6. Method Implementations
+
+### 6.1 `index(Request $request): Response`
 
 ```php
 public function index(Request $request): Response
 {
-    $filters = $request->only(['search', 'status', 'priority']);
+    $filters = $request->only(['search', 'category_id', 'supplier_id']);
 
-    $projects = Project::query()
-        ->when($filters['search'] ?? null, fn ($q, $search) =>
-            $q->whereIn('id', Project::search($search)->keys())
-        )
-        ->when($filters['status'] ?? null, fn ($q, $status) =>
-            $q->where('status', $status)
-        )
-        ->when($filters['priority'] ?? null, fn ($q, $priority) =>
-            $q->where('priority', $priority)
-        )
+    $query = Material::query();
+
+    if ($search = $filters['search'] ?? null) {
+        $ids = Material::search($search)->keys();
+        $query->whereIn('id', $ids);
+    }
+
+    $query->when($filters['category_id'] ?? null,
+        fn ($q, $id) => $q->where('category_id', $id));
+
+    $query->when($filters['supplier_id'] ?? null,
+        fn ($q, $id) => $q->where('supplier_id', $id));
+
+    $materials = $query
+        ->with(['category', 'supplier'])
         ->latest()
         ->paginate(15)
         ->withQueryString();
 
-    return Inertia::render('Projects/Index', [
-        'projects' => $projects,
-        'filters'  => $filters,
+    return Inertia::render('Materials/Index', [
+        'materials'  => $materials,
+        'filters'    => $filters,
+        'categories' => $this->categoryOptions(),
+        'suppliers'  => $this->supplierOptions(),
     ]);
 }
 ```
 
-**Search approach:** The project uses Laravel Scout with the database driver (`toSearchableArray()` already defined on the model). Scout's `search()->keys()` returns matching ULIDs, which feeds a `whereIn` on the Eloquent query. This combines Scout's full-text search with Eloquent's filter chain cleanly. The database Scout driver works synchronously — no queue needed for search.
+**Key decisions:**
+- Scout `search()->keys()` + `whereIn` is the identical pattern used in `ProjectController::index()`. `keys()` returns ULID strings; `whereIn` handles string primary keys correctly.
+- The `if ($search = ...)` guard ensures Scout is never called when the search param is absent — no performance impact from an unused scout query.
+- `with(['category', 'supplier'])` prevents N+1 on the index list.
+- Categories and suppliers are passed to `index` so the frontend can render filter dropdowns without a separate AJAX call.
+- `latest()` orders by `created_at DESC` — the project-wide default ordering.
+- Filter keys are `category_id` / `supplier_id` (FK column names) so the frontend can post ULID values directly without name transformation.
 
-**Pagination:** `paginate(15)` with `withQueryString()` preserves filter params across pagination links. Inertia serialises the `LengthAwarePaginator` automatically; the frontend receives `data`, `links`, `meta`, and `current_page`.
+---
 
-**Filter passing:** The `$filters` array is passed as-is to Inertia so the frontend can initialise form fields from it.
-
-### 3.3 create()
+### 6.2 `create(): Response`
 
 ```php
 public function create(): Response
 {
-    return Inertia::render('Projects/Create', [
-        'statuses'   => collect(ProjectStatus::cases())->map(fn ($s) => [
-            'value' => $s->value,
-            'label' => $s->label(),
-        ]),
-        'priorities' => collect(ProjectPriority::cases())->map(fn ($p) => [
-            'value' => $p->value,
-            'label' => $p->label(),
-        ]),
+    return Inertia::render('Materials/Create', [
+        'units'      => $this->unitOptions(),
+        'categories' => $this->categoryOptions(),
+        'suppliers'  => $this->supplierOptions(),
     ]);
 }
 ```
 
-Each enum is mapped to a plain `{ value, label }` array. This is the pattern Inertia components expect for `<select>` population. The `value` is the backed string value (e.g., `'in_progress'`); the `label` is the human-readable string (e.g., `'In Progress'`). JSON serialisation of the raw enum cases would expose only the `value` property — the explicit map ensures `label()` is called on the PHP side.
+**Key decisions:**
+- The `Create.jsx` stub already destructures `{ categories, suppliers, units }` — prop names must match exactly.
+- All three reference data sets are fetched via private helpers.
 
-### 3.4 store()
+---
+
+### 6.3 `store(StoreMaterialRequest $request): RedirectResponse`
 
 ```php
-public function store(StoreProjectRequest $request): RedirectResponse
+public function store(StoreMaterialRequest $request): RedirectResponse
 {
-    $project = Project::create($request->validated());
+    $material = Material::create($request->validated());
 
-    return redirect()
-        ->route('projects.show', $project)
-        ->with('success', 'Project created successfully.');
+    return redirect()->route('materials.show', $material)
+        ->with('success', 'Material created successfully.');
 }
 ```
 
-`$request->validated()` returns only the fields that passed the Form Request rules. The `Project::create()` call hits the `booted()` observer which auto-generates the slug from `title`. Route model binding on `projects.show` resolves the project by its `slug` (via `getRouteKeyName()`), so passing `$project` to `route()` works correctly.
+**Key decisions:**
+- `$request->validated()` is safe to pass directly to `Material::create()` because `StoreMaterialRequest->rules()` only validates fields that are present in `Material::$fillable`. No extra fields can slip through.
+- Redirect to `show` (not `index`) gives immediate confirmation — consistent with `ProjectController::store()`.
+- Flash key `success` is the project-wide convention.
+- Route model binding for `materials.show` resolves by the `id` ULID column (materials use ULID `id`, not a slug like projects).
 
-### 3.5 show()
+---
+
+### 6.4 `show(Material $material): Response`
 
 ```php
-public function show(Project $project): Response
+public function show(Material $material): Response
 {
-    return Inertia::render('Projects/Show', [
-        'project' => $project,
+    $material->load(['category', 'supplier', 'projects']);
+
+    return Inertia::render('Materials/Show', [
+        'material' => $material,
     ]);
 }
 ```
 
-Minimal as specified — Task 07 handles eager loading of relations. Route model binding resolves by slug.
+**Key decisions:**
+- Route model binding resolves by ULID `id` (no `getRouteKeyName()` override on `Material` — unlike `Project` which uses slug).
+- `load(['category', 'supplier', 'projects'])` eager-loads all relationships referenced in the task spec. The `projects` relation is a `BelongsToMany` through `project_materials` with `quantity_used`, `cost_at_time`, and `notes` pivot columns already configured in the model.
+- `Show.jsx` stub destructures `{ material }` — a single prop suffices.
+- Soft-deleted materials are automatically excluded from route model binding by default — Laravel returns 404.
 
-### 3.6 edit()
+---
+
+### 6.5 `edit(Material $material): Response`
 
 ```php
-public function edit(Project $project): Response
+public function edit(Material $material): Response
 {
-    return Inertia::render('Projects/Edit', [
-        'project'    => $project,
-        'statuses'   => collect(ProjectStatus::cases())->map(fn ($s) => [
-            'value' => $s->value,
-            'label' => $s->label(),
-        ]),
-        'priorities' => collect(ProjectPriority::cases())->map(fn ($p) => [
-            'value' => $p->value,
-            'label' => $p->label(),
-        ]),
+    return Inertia::render('Materials/Edit', [
+        'material'   => $material,
+        'units'      => $this->unitOptions(),
+        'categories' => $this->categoryOptions(),
+        'suppliers'  => $this->supplierOptions(),
     ]);
 }
 ```
 
-Identical enum mapping as `create()`. The `project` prop lets the frontend pre-populate form fields.
+**Key decisions:**
+- `Edit.jsx` stub already destructures `{ material, categories, suppliers, units }` — prop names must match exactly.
+- The material is passed as-is; no extra `load()` is needed because the edit form only needs scalar fields, not related records.
 
-### 3.7 update()
+---
+
+### 6.6 `update(UpdateMaterialRequest $request, Material $material): RedirectResponse`
 
 ```php
-public function update(UpdateProjectRequest $request, Project $project): RedirectResponse
+public function update(UpdateMaterialRequest $request, Material $material): RedirectResponse
 {
-    $project->update($request->validated());
+    $material->update($request->validated());
 
-    return redirect()
-        ->route('projects.show', $project)
-        ->with('success', 'Project updated successfully.');
+    return redirect()->route('materials.show', $material)
+        ->with('success', 'Material updated successfully.');
 }
 ```
 
-`UpdateProjectRequest` uses `sometimes` on all fields, so PATCH requests with partial payloads work correctly. The slug is not in the `fillable` array's update path — it was set at creation and is never changed by update.
+**Key decisions:**
+- `UpdateMaterialRequest` uses `sometimes` rules on all fields, so partial PATCH requests work correctly.
+- `$request->validated()` is safe to pass directly to `update()` for the same reason as `store()`.
+- Redirect to `show` (not back) gives a clean view of the saved state — consistent with `ProjectController::update()`.
 
-### 3.8 destroy()
+---
+
+### 6.7 `destroy(Material $material): RedirectResponse`
 
 ```php
-public function destroy(Project $project): RedirectResponse
+public function destroy(Material $material): RedirectResponse
 {
-    $project->delete();
+    $material->delete();
 
-    return redirect()
-        ->route('projects.index')
-        ->with('success', 'Project deleted.');
+    return redirect()->route('materials.index')
+        ->with('success', 'Material deleted successfully.');
 }
 ```
 
-`SoftDeletes` is applied on the model, so `$project->delete()` sets `deleted_at` rather than removing the row. The redirect goes to the index (not back to the deleted project's show page).
+**Key decisions:**
+- `$material->delete()` triggers the `SoftDeletes` trait — sets `deleted_at`, does not remove the row. This satisfies the governance rule "soft deletes on materials".
+- Redirect to `materials.index` (not back) because the record is no longer accessible at its `show` URL after deletion (route model binding would 404 for soft-deleted records).
+- The route is only available once `.except(['destroy'])` is removed from `routes/web.php`.
 
 ---
 
-## 4. Key Decisions
+### 6.8 `adjustStock` (out of scope — do not modify)
 
-### Decision 1: Scout `search()->keys()` feeds a `whereIn` — not `Project::search()->get()`
-
-`Project::search($term)->get()` returns a Scout Collection that bypasses Eloquent's `when()` filter chain and `paginate()`. Using `Project::search($term)->keys()` returns matching IDs and feeds them into the regular Eloquent query, keeping all filter conditions and pagination on one query path. This is the standard Laravel Scout + Eloquent composition pattern for combined filter+search.
-
-**Caveat:** If the search term is empty, `keys()` is never called and the query runs as a standard Eloquent query, which is the correct behaviour — no performance penalty when `?search=` is absent.
-
-### Decision 2: Filters passed back as the raw `only()` array
-
-The `$filters` array contains whatever the user sent (`null` for absent keys). Passing it to Inertia as-is means the frontend always has the full filter shape, even when values are `null`. The alternative — only passing non-null filters — makes initialising controlled form inputs more fragile on the frontend.
-
-### Decision 3: Flash messages use `with('success', ...)` string convention
-
-Laravel's session flash with a `'success'` key is the standard Inertia flash pattern. The shared `HandleInertiaRequests` middleware already shares flash data via `$request->session()->get('success')` (or similar). The key name `success` is consistent across all controller redirects in this project.
-
-### Decision 4: No slug regeneration on update
-
-The `UpdateProjectRequest` does not include `slug`. The `fillable` array on `Project` includes `slug`, but the Form Request never validates or passes it, so `update($request->validated())` will never touch the slug. Route model binding continues to work after an update because the slug remains the same. This avoids broken bookmarks/links from slug changes.
-
-### Decision 5: `paginate(15)` — not `simplePaginate`
-
-`paginate(15)` returns a `LengthAwarePaginator` with total count and page links. `simplePaginate` omits the total count. The acceptance criterion says "paginates (15/page)" and the frontend will likely want to show "Page X of Y" — `paginate` is the safe choice.
+This method stub exists at line 44 of the current controller and has its own registered route (`materials.adjust-stock`). It is not listed in the 7 methods of this task and must remain as-is.
 
 ---
 
-## 5. Verified Dependencies
+## 7. Verified Dependencies
 
-| Dependency | Location | Status |
-|-----------|----------|--------|
-| `ProjectStatus` enum with `label()` | `app/Enums/ProjectStatus.php` | Verified — 7 cases, all have `label()` |
-| `ProjectPriority` enum with `label()` | `app/Enums/ProjectPriority.php` | Verified — 4 cases, all have `label()` |
-| `StoreProjectRequest` with full rules | `app/Http/Requests/StoreProjectRequest.php` | Verified — 12 validated fields |
-| `UpdateProjectRequest` with `sometimes` rules | `app/Http/Requests/UpdateProjectRequest.php` | Verified — same 12 fields, all `sometimes` |
-| `Project::search()` (Scout Searchable) | `app/Models/Project.php` line 19 | Verified — `Searchable` trait used |
-| `Project::toSearchableArray()` | `app/Models/Project.php` lines 74-83 | Verified — indexes title, description, client_name, notes |
-| `Project` soft deletes | `app/Models/Project.php` line 19 | Verified — `SoftDeletes` trait used |
-| `Project` slug route key | `app/Models/Project.php` lines 69-72 | Verified — `getRouteKeyName()` returns `'slug'` |
-| `Project` slug auto-generation | `app/Models/Project.php` lines 52-67 | Verified — `booted()` generates unique slug on create |
-| `Route::resource('projects', ...)` | `routes/web.php` line 32 | Verified — all 7 CRUD routes registered |
-| `status` and `priority` DB indexes | `database/migrations/..._create_projects_table.php` | Verified — both indexed for filter queries |
-| Scout database driver | Assumed from CLAUDE.md ("Laravel Scout with database driver") | Not inspected in config — confirm `SCOUT_DRIVER=database` in `.env` |
-| `ProjectFactory` | `database/factories/ProjectFactory.php` | Verified — uses both enums, generates realistic data |
-| `ProjectControllerTest` with `#[Test]` attributes | `tests/Feature/ProjectControllerTest.php` | Verified — PHPUnit 11 style, 5 existing tests |
-
----
-
-## 6. Risks and Mitigations
-
-### Risk 1: Scout database driver not configured
-
-**Risk:** If `SCOUT_DRIVER` is not set to `database` in the test environment, `Project::search()->keys()` may hit a null or Algolia driver and throw or return empty results.
-
-**Mitigation:** In the test for search, assert that a project with the search term in its title is returned (and one without is not). If the Scout driver is not `database`, the test fails with a clear error pointing to the config, not a silent wrong result. Add a `SCOUT_DRIVER=database` line to `.env.testing` if not present. The `index()` implementation uses `when($search, ...)` — when the search param is absent, Scout is never called and a configuration problem has no effect.
-
-### Risk 2: `Project::search()->keys()` returns ULID strings, `whereIn` on string primary key
-
-**Risk:** ULID primary keys are strings. If `whereIn('id', ...)` receives a Collection of strings, it works correctly with MySQL's string comparison. This is not a real risk — just worth noting that integer `id` assumptions don't apply here.
-
-**Mitigation:** No action needed. The Scout `keys()` method returns the values of `toSearchableArray()['id']`, which are ULID strings. `whereIn('id', $ulids)` works correctly.
-
-### Risk 3: Flash message key mismatch with HandleInertiaRequests
-
-**Risk:** If `HandleInertiaRequests::share()` reads a different key (e.g., `flash.message` rather than `success`), the flash messages will not appear in the frontend. This does not affect controller correctness or tests.
-
-**Mitigation:** The controller uses `with('success', ...)` consistently. The exact key is a frontend/middleware concern. Document that the frontend must read the `success` flash key from Inertia's shared props. If the project has a different convention, adjust the key in the controller — the test does not assert on flash message content, only on redirect target.
-
-### Risk 4: Paginator serialisation in Inertia response
-
-**Risk:** Inertia's resource handling serialises `LengthAwarePaginator` using its `toArray()` representation. If the frontend expects a different shape (e.g., wrapped under a `data` key with separate `meta`), there may be a mismatch.
-
-**Mitigation:** This is a frontend concern addressed in the CRUD frontend tasks. The controller passes `$projects` (the paginator) directly — this is the standard Inertia pattern. The test asserts that the Inertia component receives a `projects` prop, not its exact shape.
-
-### Risk 5: Existing test `test_authenticated_user_can_view_projects_index` passes on the stub
-
-**Risk:** The stub `index()` already returns `Inertia::render('Projects/Index')` with no data. The existing test only asserts `assertOk()`, which the stub already passes. After implementation, more assertions are needed to confirm data is passed.
-
-**Mitigation:** The expanded test suite adds `assertInertia` assertions (using the `inertia-laravel` test helpers) to confirm the `projects` and `filters` props are present on the response.
+| Dependency | Status | Location |
+|---|---|---|
+| `Material` model with `SoftDeletes`, `Searchable`, `HasUlids` | Verified | `app/Models/Material.php` lines 17 |
+| `MaterialUnit` enum with `label()` method (14 cases) | Verified | `app/Enums/MaterialUnit.php` |
+| `StoreMaterialRequest` with full field rules | Verified | `app/Http/Requests/StoreMaterialRequest.php` |
+| `UpdateMaterialRequest` with `sometimes` rules | Verified | `app/Http/Requests/UpdateMaterialRequest.php` |
+| `AdjustStockRequest` | Verified | `app/Http/Requests/AdjustStockRequest.php` |
+| `MaterialCategory` model — `sort_order` column exists | Verified | `app/Models/MaterialCategory.php` + migration `2026_03_03_000002` |
+| `Supplier` model — `name` column exists | Verified | `app/Models/Supplier.php` + migration |
+| `Material::category()` BelongsTo | Verified | `app/Models/Material.php` line 51 |
+| `Material::supplier()` BelongsTo | Verified | `app/Models/Material.php` line 56 |
+| `Material::projects()` BelongsToMany via `project_materials` | Verified | `app/Models/Material.php` line 61 |
+| `Material::toSearchableArray()` for Scout | Verified | `app/Models/Material.php` line 40 (indexes name, description, sku, location) |
+| `materials` table with `category_id`, `supplier_id`, `deleted_at` | Verified | Migration `2026_03_03_000006_create_materials_table.php` |
+| `material_categories` table with `sort_order` column | Verified | Migration `2026_03_03_000002_create_material_categories_table.php` |
+| Inertia pages `Materials/Index`, `Materials/Create`, `Materials/Show`, `Materials/Edit` | Verified (stubs) | `resources/js/Pages/Materials/` — prop signatures confirmed |
+| Scout database driver — `laravel/scout` v10.24.0 | Verified | `composer.json` / application-info |
+| `MaterialFactory` with `withCategory()` and `withSupplier()` states | Verified | `database/factories/MaterialFactory.php` |
+| `MaterialCategoryFactory` | Verified | `database/factories/MaterialCategoryFactory.php` |
+| `SupplierFactory` | Verified | `database/factories/SupplierFactory.php` |
+| Existing `MaterialControllerTest` with 4 `#[Test]` tests | Verified | `tests/Feature/MaterialControllerTest.php` |
 
 ---
 
-## 7. Test Plan
+## 8. Risks
 
-The existing `ProjectControllerTest.php` has 5 tests, all of which only assert HTTP 200. The following tests need to be added:
+### Risk 1: Scout `search()->keys()` returns empty collection when search term matches nothing
 
-### New tests to add
+**Impact:** Low. The `whereIn('id', [])` produces a query that returns zero results, which is the correct behaviour for a search with no matches.
+
+**Mitigation:** No action required. This is intentional behaviour.
+
+---
+
+### Risk 2: Scout database driver full-text behaviour on short strings
+
+**Impact:** Low. The database Scout driver uses `LIKE %term%` — not a full-text index. On a large dataset this is slow, but for a solo woodworker's inventory this is acceptable.
+
+**Mitigation:** No action required for this task. The `materials` table has no full-text index requirement in the spec.
+
+---
+
+### Risk 3: `Material::$fillable` and `validated()` future divergence
+
+**Impact:** Medium. If a future form request adds a field not in `$fillable`, `create()`/`update()` will silently ignore it.
+
+**Mitigation:** Before running tests, verify that all keys in `StoreMaterialRequest->rules()` are present in `Material::$fillable`. Currently they match exactly (`name`, `description`, `sku`, `category_id`, `supplier_id`, `unit`, `quantity_on_hand`, `low_stock_threshold`, `unit_cost`, `location`, `notes`).
+
+---
+
+### Risk 4: `MaterialCategoryFactory` does not set `sort_order`
+
+**Impact:** Low for this task. The factory default produces `sort_order = 0` for all rows (the column default is `0`). Ordering by `sort_order` is non-deterministic when all values are equal.
+
+**Mitigation:** For the existing test suite this is not a problem — no test currently asserts category ordering. If ordering matters in a future test, `MaterialCategoryFactory` should be updated to use `fake()->numberBetween(0, 100)`.
+
+---
+
+### Risk 5: `adjustStock` stub is not broken by import changes
+
+**Impact:** High if the stub breaks. The method currently uses `Request` (already imported) and `RedirectResponse` (already imported). The new imports added for the other methods do not conflict.
+
+**Mitigation:** The `adjustStock` method signature (`AdjustStockRequest $request, Material $material`) will become correctly typed once `AdjustStockRequest` is added to the import block. This is an improvement, not a breakage — it replaces the current `Request` type hint.
+
+---
+
+## 9. Acceptance Criteria Coverage
+
+| Criterion | How satisfied |
+|---|---|
+| `index` searches via Scout `search()->keys()` + `whereIn` | `Material::search($search)->keys()` + `$query->whereIn('id', $ids)` |
+| `index` filters by `category_id` via `when()` | `$query->when($filters['category_id'], fn ($q, $id) => $q->where('category_id', $id))` |
+| `index` filters by `supplier_id` via `when()` | `$query->when($filters['supplier_id'], fn ($q, $id) => $q->where('supplier_id', $id))` |
+| `index` eager-loads category + supplier | `->with(['category', 'supplier'])` |
+| `index` paginates 15 per page with query string preserved | `->paginate(15)->withQueryString()` |
+| `index` passes materials, filters, categories, suppliers | All four keys in `Inertia::render` prop array |
+| `create` passes units mapped to `{value, label}` | `collect(MaterialUnit::cases())->map(fn ($u) => ['value' => $u->value, 'label' => $u->label()])` |
+| `create` passes categories ordered by `sort_order` | `MaterialCategory::orderBy('sort_order')->get()` |
+| `create` passes suppliers ordered by name | `Supplier::orderBy('name')->get()` |
+| `store` uses `StoreMaterialRequest` | Type-hinted in method signature |
+| `store` creates via `Material::create($validated)` | `Material::create($request->validated())` |
+| `store` redirects to show with flash success | `redirect()->route('materials.show', $material)->with('success', ...)` |
+| `show` loads category, supplier, projects | `$material->load(['category', 'supplier', 'projects'])` |
+| `show` renders `Materials/Show` with material prop | `Inertia::render('Materials/Show', ['material' => $material])` |
+| `edit` passes material, units, categories, suppliers | All four keys in `Inertia::render` prop array |
+| `update` uses `UpdateMaterialRequest` | Type-hinted in method signature |
+| `update` calls `$material->update($validated)` | `$material->update($request->validated())` |
+| `update` redirects to show | `redirect()->route('materials.show', $material)` |
+| `destroy` soft-deletes via `$material->delete()` | `SoftDeletes` trait intercepts and sets `deleted_at` |
+| `destroy` redirects to materials index | `redirect()->route('materials.index')` |
+| `destroy` route registered | `.except(['destroy'])` removed from `routes/web.php` |
+| No validation in controllers | All validation delegated to form request classes |
+| Inertia responses from all read methods | All 4 read methods return `Inertia::render(...)` |
+| Existing test `test_authenticated_user_can_view_material` passes | `show()` renders the page and passes `$material` prop |
+| Existing test `test_authenticated_user_can_view_materials_index` passes | `index()` renders the page with required props |
+| Existing test `test_authenticated_user_can_view_create_material_form` passes | `create()` renders the page with required props |
+| Existing test `test_guest_is_redirected_from_materials` passes | Route middleware group unchanged |
+
+---
+
+## 10. Test Coverage Gaps (Recommended Additions)
+
+The existing `MaterialControllerTest` only asserts HTTP 200 on three routes and has no assertions for `store`, `update`, or `destroy`. The following tests should be added when implementing the controller (using PHPUnit 11 `#[Test]` attribute style):
 
 ```
-test_index_passes_projects_and_filters_to_inertia
-test_index_filters_by_status
-test_index_filters_by_priority
+test_index_passes_materials_filters_categories_suppliers_to_inertia
+test_index_filters_by_category_id
+test_index_filters_by_supplier_id
 test_index_searches_by_term
-test_index_paginates_at_15_per_page
-test_create_passes_statuses_and_priorities_to_inertia
-test_store_creates_project_and_redirects_to_show
-test_store_fails_validation_without_title
-test_show_passes_project_to_inertia
-test_edit_passes_project_statuses_and_priorities_to_inertia
-test_update_updates_project_and_redirects_to_show
-test_update_fails_validation_with_invalid_status
-test_destroy_soft_deletes_project_and_redirects_to_index
-test_destroyed_project_not_in_index_results
+test_create_passes_units_categories_suppliers_to_inertia
+test_store_creates_material_and_redirects_to_show
+test_store_fails_validation_without_required_name
+test_store_fails_validation_without_required_unit
+test_show_loads_relations_and_passes_material
+test_edit_passes_material_units_categories_suppliers
+test_update_updates_material_and_redirects_to_show
+test_destroy_soft_deletes_material_and_redirects_to_index
+test_destroyed_material_returns_404_on_show
 ```
 
-### Test conventions
-
-- Use `#[Test]` attribute (PHPUnit 11 style, not `/** @test */` docblock)
-- Use `RefreshDatabase` (already present on the class)
-- Use `User::factory()->create()` and `actingAs($user)`
-- Use `Project::factory()->create([...])` for seeded data
-- For Inertia assertions: use `$response->assertInertia(fn ($page) => $page->component('Projects/Index')->has('projects')->has('filters'))`
-- For store/update: assert database state with `$this->assertDatabaseHas('projects', [...])`
-- For destroy: assert soft delete with `$this->assertSoftDeleted('projects', ['id' => $project->id])`
-- Flash messages: assert redirect target only, not flash content (flash is a frontend concern)
-
-### Example: store test
-
-```php
-#[Test]
-public function test_store_creates_project_and_redirects_to_show(): void
-{
-    $user = User::factory()->create();
-
-    $response = $this->actingAs($user)->post('/projects', [
-        'title' => 'My Cabinet Build',
-    ]);
-
-    $this->assertDatabaseHas('projects', ['title' => 'My Cabinet Build']);
-
-    $project = Project::where('title', 'My Cabinet Build')->first();
-
-    $response->assertRedirect(route('projects.show', $project));
-}
-```
-
-### Example: destroy test
-
-```php
-#[Test]
-public function test_destroy_soft_deletes_project_and_redirects_to_index(): void
-{
-    $user = User::factory()->create();
-    $project = Project::factory()->create();
-
-    $response = $this->actingAs($user)->delete('/projects/' . $project->slug);
-
-    $response->assertRedirect(route('projects.index'));
-    $this->assertSoftDeleted('projects', ['id' => $project->id]);
-}
-```
-
----
-
-## 8. Acceptance Criteria Coverage
-
-| Criterion | Implementation |
-|-----------|---------------|
-| `index()` accepts `?search=`, `?status=`, `?priority=` | `$request->only(['search', 'status', 'priority'])` + `when()` chain in query |
-| `index()` paginates at 15/page | `->paginate(15)->withQueryString()` |
-| `index()` passes `{ projects, filters }` to Inertia | `Inertia::render('Projects/Index', ['projects' => ..., 'filters' => ...])` |
-| `create()` passes `{ statuses, priorities }` with `label()` | Enum `cases()` mapped to `{ value, label }` arrays |
-| `store()` uses `StoreProjectRequest` | Method signature: `store(StoreProjectRequest $request)` |
-| `store()` creates project | `Project::create($request->validated())` |
-| `store()` redirects to `projects.show` with flash | `redirect()->route('projects.show', $project)->with('success', ...)` |
-| `show()` passes `{ project }` | `Inertia::render('Projects/Show', ['project' => $project])` |
-| `edit()` passes `{ project, statuses, priorities }` | Same enum mapping + `$project` in props |
-| `update()` uses `UpdateProjectRequest` | Method signature: `update(UpdateProjectRequest $request, Project $project)` |
-| `update()` redirects with flash | `redirect()->route('projects.show', $project)->with('success', ...)` |
-| `destroy()` soft-deletes | `$project->delete()` — `SoftDeletes` trait handles the rest |
-| `destroy()` redirects to index with flash | `redirect()->route('projects.index')->with('success', ...)` |
-| Route model binding by slug | `getRouteKeyName()` already returns `'slug'` on the model — no controller change needed |
-| Form requests handle all validation | No `$request->validate()` calls in the controller — Form Request classes used exclusively |
+All tests should use `RefreshDatabase`, `User::factory()->create()`, `actingAs($user)`, and the appropriate factories. Inertia assertions use `$response->assertInertia(fn ($page) => ...)`. Database state assertions use `assertDatabaseHas` and `assertSoftDeleted`.

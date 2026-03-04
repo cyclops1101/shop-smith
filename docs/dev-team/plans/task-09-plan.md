@@ -1,909 +1,921 @@
-# Task 09 Plan: Project CRUD Feature Tests
+# Task 09 Plan: Supplier Controller Feature Tests
 
 ## 1. Objective
 
-Expand `tests/Feature/ProjectControllerTest.php` with comprehensive tests for all CRUD actions on the `ProjectController`. This task replaces the minimal existing test stubs with full assertions covering authentication, Inertia component rendering, prop shape, request validation, database side-effects, and redirect targets.
-
-The tests must be **immediately runnable** against the existing codebase — which means the controller must be updated as part of this task to implement the real logic that the tests verify. Tests that rely on unimplemented controller behaviour will fail at the PHPUnit level and are not acceptable.
+Create `tests/Feature/SupplierControllerTest.php` covering all 7 resource actions on the
+`SupplierController` with 14 tests total. The test file must be immediately runnable, which
+means four prerequisite files must also be created as part of this task: the route registration,
+`SupplierController`, `StoreSupplierRequest`, and `UpdateSupplierRequest`. Without these, all
+tests would produce 404 responses and fail at the assertion level.
 
 ---
 
 ## 2. Current State Analysis
 
-### Existing test file
+### What exists
 
-`tests/Feature/ProjectControllerTest.php` currently has 5 tests:
+| Artifact | Status |
+|---|---|
+| `App\Models\Supplier` | Exists. Uses `HasUlids`, `HasFactory`. No soft deletes. Has `materials()` and `expenses()` HasMany relations. |
+| `Database\Factories\SupplierFactory` | Exists. Generates `name` via `fake()->company()`. All other fields null by default. |
+| `Database\Factories\MaterialFactory` | Exists. Has `withSupplier()` state that creates a related Supplier. `supplier_id` is nullable in the factory by default. |
+| `database/migrations/..._create_suppliers_table.php` | Exists. Columns: `id` (ULID PK), `name`, `contact_name`, `phone`, `email`, `website`, `address`, `notes`, timestamps. No soft deletes. |
+| `database/migrations/..._create_materials_table.php` | Exists. `supplier_id` FK with `->nullOnDelete()` cascade rule. This is the database-level cascade that nullifies `supplier_id` on related materials when a supplier is hard-deleted. |
+| `App\Http\Controllers\SupplierController` | Does NOT exist. Must be created. |
+| `App\Http\Requests\StoreSupplierRequest` | Does NOT exist. Must be created. |
+| `App\Http\Requests\UpdateSupplierRequest` | Does NOT exist. Must be created. |
+| Route `Route::resource('suppliers', ...)` | Does NOT exist in `routes/web.php`. Must be added. |
 
-| Test | What it checks |
-|------|---------------|
-| `test_guest_is_redirected_from_projects` | unauthenticated GET /projects → redirect to /login |
-| `test_authenticated_user_can_view_projects_index` | assertOk() only — no Inertia or prop assertions |
-| `test_authenticated_user_can_view_create_project_form` | assertOk() only |
-| `test_authenticated_user_can_view_project` | assertOk() only |
-| `test_authenticated_user_can_view_edit_project` | assertOk() only |
+### Key model characteristics
 
-All mutation tests (store, update, destroy) are absent. No Inertia component assertions exist. No prop shape checks exist. No database assertion checks exist.
+- **No soft deletes**: `App\Models\Supplier` does not use `SoftDeletes`. `destroy` must hard-delete.
+  The test must use `assertDatabaseMissing`, never `assertSoftDeleted`.
+- **ULID primary key**: Route model binding resolves suppliers by ULID (`/suppliers/{supplier}`).
+  URLs in tests use `$supplier->id` (the ULID), not a slug.
+- **DB cascade on materials**: `supplier_id` on the `materials` table is declared
+  `->foreignUlid('supplier_id')->nullable()->constrained('suppliers')->nullOnDelete()`.
+  When a supplier is hard-deleted, MySQL automatically sets `supplier_id = null` on all related
+  materials rows. No application-level observer or event is needed — this is enforced at the
+  database constraint level.
+- **`email_verified_at` defaults to `now()`**: `UserFactory` sets `email_verified_at => now()`
+  by default, so `User::factory()->create()` produces a verified user and the `['auth', 'verified']`
+  middleware group will not redirect to the email verification notice page.
 
-### Existing controller
+### Inertia component name convention
 
-`app/Http/Controllers/ProjectController.php` currently returns stub responses for all methods (e.g., `redirect()->back()` for store/update/destroy, no props passed to Inertia views). This must be updated before the comprehensive tests can pass.
+Inertia component names follow the `Resource/Action` pattern used by all existing controllers:
 
-### Key enums and validation
+| Action | Component |
+|---|---|
+| index | `Suppliers/Index` |
+| create | `Suppliers/Create` |
+| show | `Suppliers/Show` |
+| edit | `Suppliers/Edit` |
 
-- `App\Enums\ProjectStatus` — values: `planned`, `designing`, `in_progress`, `finishing`, `on_hold`, `completed`, `archived`
-- `App\Enums\ProjectPriority` — values: `low`, `medium`, `high`, `urgent`
-- `App\Http\Requests\StoreProjectRequest` — requires `title` (required, string, max:255); other fields optional
-- `App\Http\Requests\UpdateProjectRequest` — `title` is `sometimes|required`; `status` is `sometimes|Rule::enum(ProjectStatus::class)`
+### Route key
 
-### Route binding
-
-Projects use slug-based route model binding (`getRouteKeyName()` returns `'slug'`). The `Project::booted()` observer auto-generates slugs on create.
-
-### Scout / search
-
-`Project` uses `Laravel\Scout\Searchable` with the database driver. The `index` action must support `?search=` and `?status=` query parameters.
-
----
-
-## 3. Files to Modify
-
-| Action | Path |
-|--------|------|
-| Overwrite (expand) | `tests/Feature/ProjectControllerTest.php` |
-| Update | `app/Http/Controllers/ProjectController.php` |
-
-No new files are created. The test file is fully rewritten; the controller is updated with real logic to support the test assertions.
-
----
-
-## 4. Controller Implementation Required
-
-The test suite requires the controller to implement real behaviour. The plan for each method follows.
-
-### 4.1 `index(Request $request): Response`
-
-- Pass `projects` prop: paginated collection of projects (eager-load nothing by default), filtered by `?search=` via Scout and `?status=` via a where clause.
-- Pass `filters` prop: the current query values (`search`, `status`) as an array.
-- Pass `statuses` prop: all `ProjectStatus` cases as `[value, label]` pairs (for the filter UI).
-
-```php
-public function index(Request $request): Response
-{
-    $query = Project::query();
-
-    if ($search = $request->input('search')) {
-        $ids = Project::search($search)->keys();
-        $query->whereIn('id', $ids);
-    }
-
-    if ($status = $request->input('status')) {
-        $query->where('status', $status);
-    }
-
-    $projects = $query->latest()->paginate(20)->withQueryString();
-
-    return Inertia::render('Projects/Index', [
-        'projects' => $projects,
-        'filters'  => $request->only(['search', 'status']),
-        'statuses' => collect(ProjectStatus::cases())
-            ->map(fn ($s) => ['value' => $s->value, 'label' => $s->label()])
-            ->all(),
-    ]);
-}
-```
-
-### 4.2 `create(): Response`
-
-Pass `statuses` and `priorities` props (same enum-to-array format as above).
-
-```php
-public function create(): Response
-{
-    return Inertia::render('Projects/Create', [
-        'statuses'   => collect(ProjectStatus::cases())
-            ->map(fn ($s) => ['value' => $s->value, 'label' => $s->label()])
-            ->all(),
-        'priorities' => collect(ProjectPriority::cases())
-            ->map(fn ($p) => ['value' => $p->value, 'label' => $p->label()])
-            ->all(),
-    ]);
-}
-```
-
-### 4.3 `store(StoreProjectRequest $request): RedirectResponse`
-
-- Replace `Request` type-hint with `StoreProjectRequest`.
-- Create the project from validated input.
-- Redirect to `projects.show` with the new project's slug.
-
-```php
-public function store(StoreProjectRequest $request): RedirectResponse
-{
-    $project = Project::create($request->validated());
-
-    return redirect()->route('projects.show', $project);
-}
-```
-
-### 4.4 `show(Project $project): Response`
-
-Pass the full `project` model as a prop.
-
-```php
-public function show(Project $project): Response
-{
-    return Inertia::render('Projects/Show', [
-        'project' => $project,
-    ]);
-}
-```
-
-### 4.5 `edit(Project $project): Response`
-
-Pass `project`, `statuses`, and `priorities` props.
-
-```php
-public function edit(Project $project): Response
-{
-    return Inertia::render('Projects/Edit', [
-        'project'    => $project,
-        'statuses'   => collect(ProjectStatus::cases())
-            ->map(fn ($s) => ['value' => $s->value, 'label' => $s->label()])
-            ->all(),
-        'priorities' => collect(ProjectPriority::cases())
-            ->map(fn ($p) => ['value' => $p->value, 'label' => $p->label()])
-            ->all(),
-    ]);
-}
-```
-
-### 4.6 `update(UpdateProjectRequest $request, Project $project): RedirectResponse`
-
-- Replace `Request` type-hint with `UpdateProjectRequest`.
-- Update the project and redirect to `projects.show`.
-
-```php
-public function update(UpdateProjectRequest $request, Project $project): RedirectResponse
-{
-    $project->update($request->validated());
-
-    return redirect()->route('projects.show', $project);
-}
-```
-
-### 4.7 `destroy(Project $project): RedirectResponse`
-
-- Soft-delete the project.
-- Redirect to `projects.index`.
-
-```php
-public function destroy(Project $project): RedirectResponse
-{
-    $project->delete();
-
-    return redirect()->route('projects.index');
-}
-```
-
-The controller must import `App\Enums\ProjectStatus`, `App\Enums\ProjectPriority`, `App\Http\Requests\StoreProjectRequest`, and `App\Http\Requests\UpdateProjectRequest` at the top of the file.
+Supplier uses the default Eloquent route key (`id`, which is the ULID). No slug. URLs are:
+- `GET /suppliers`
+- `GET /suppliers/create`
+- `POST /suppliers`
+- `GET /suppliers/{supplier}` (ULID)
+- `GET /suppliers/{supplier}/edit` (ULID)
+- `PATCH /suppliers/{supplier}` (ULID)
+- `DELETE /suppliers/{supplier}` (ULID)
 
 ---
 
-## 5. Test Method Plan
+## 3. Files to Create or Modify
 
-All tests use:
-- `use RefreshDatabase;` trait on the class
-- `#[Test]` attribute (PHPUnit 11 style — NOT Pest)
-- `User::factory()->create()` and `Project::factory()->create()` — never raw SQL
-
-### Full list of 12 test methods
-
-| # | Method name | Acceptance criterion |
-|---|-------------|---------------------|
-| 1 | `test_guest_is_redirected_from_projects` | unauthenticated GET /projects redirects to login |
-| 2 | `test_authenticated_user_sees_projects_index_with_projects_and_filters` | GET /projects returns Inertia Projects/Index with projects and filters props |
-| 3 | `test_search_filter_returns_filtered_results` | GET /projects?search=foo returns filtered results |
-| 4 | `test_status_filter_returns_filtered_results` | GET /projects?status=planned returns filtered results |
-| 5 | `test_create_page_returns_statuses_and_priorities` | GET /projects/create returns Projects/Create with statuses and priorities |
-| 6 | `test_store_creates_project_and_redirects_to_show` | POST /projects with valid data creates project, redirects to show page |
-| 7 | `test_store_with_missing_title_returns_validation_error` | POST /projects with missing title returns 422 |
-| 8 | `test_show_returns_project_prop` | GET /projects/{slug} returns Projects/Show with project prop |
-| 9 | `test_edit_returns_project_statuses_and_priorities` | GET /projects/{slug}/edit returns Projects/Edit with project, statuses, priorities |
-| 10 | `test_update_saves_changes_and_redirects_to_show` | PATCH /projects/{slug} updates project, redirects |
-| 11 | `test_update_with_invalid_status_returns_validation_error` | PATCH /projects/{slug} with invalid status returns 422 |
-| 12 | `test_destroy_soft_deletes_and_redirects_to_index` | DELETE /projects/{slug} soft-deletes, redirects to index |
+| Action | Path | Notes |
+|---|---|---|
+| Create | `tests/Feature/SupplierControllerTest.php` | Primary deliverable — 14 test methods |
+| Create | `app/Http/Controllers/SupplierController.php` | Full resource controller with real logic |
+| Create | `app/Http/Requests/StoreSupplierRequest.php` | Validates name (required), email (nullable email), website (nullable url) |
+| Create | `app/Http/Requests/UpdateSupplierRequest.php` | Same rules, name is `sometimes\|required` |
+| Modify | `routes/web.php` | Add `Route::resource('suppliers', SupplierController::class)` inside the auth+verified group |
 
 ---
 
-## 6. Detailed Test Implementation
+## 4. Controller Implementation
 
-### Imports required
-
-```php
-<?php
-
-namespace Tests\Feature;
-
-use App\Enums\ProjectPriority;
-use App\Enums\ProjectStatus;
-use App\Models\Project;
-use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use PHPUnit\Framework\Attributes\Test;
-use Tests\TestCase;
-```
-
-### Test 1: Guest redirect
-
-```php
-#[Test]
-public function test_guest_is_redirected_from_projects(): void
-{
-    $this->get('/projects')->assertRedirect('/login');
-}
-```
-
-This test already exists and passes. It is kept verbatim.
-
-### Test 2: Index with props
-
-```php
-#[Test]
-public function test_authenticated_user_sees_projects_index_with_projects_and_filters(): void
-{
-    $user = User::factory()->create();
-    Project::factory()->count(3)->create();
-
-    $this->actingAs($user)
-        ->get('/projects')
-        ->assertOk()
-        ->assertInertia(fn ($page) => $page
-            ->component('Projects/Index')
-            ->has('projects')
-            ->has('filters')
-        );
-}
-```
-
-The `assertInertia` method is provided by `inertia/laravel` via `Inertia\Testing\AssertableInertia`. The callable receives an `AssertableInertia` instance. `has('projects')` verifies the prop key exists. `has('filters')` likewise.
-
-Note: `AssertableInertia` does not need to be imported explicitly — `assertInertia` receives it as the argument type from the `inertia/laravel` package's test macro added to `TestResponse`.
-
-### Test 3: Search filter
-
-```php
-#[Test]
-public function test_search_filter_returns_filtered_results(): void
-{
-    $user = User::factory()->create();
-    Project::factory()->create(['title' => 'Oak Dining Table']);
-    Project::factory()->create(['title' => 'Walnut Bookshelf']);
-
-    $response = $this->actingAs($user)->get('/projects?search=Oak');
-
-    $response->assertOk()
-        ->assertInertia(fn ($page) => $page
-            ->component('Projects/Index')
-            ->has('projects')
-            ->has('filters', fn ($filters) => $filters
-                ->where('search', 'Oak')
-                ->etc()
-            )
-        );
-}
-```
-
-Note on Scout with database driver: The database Scout driver performs SQL `LIKE` searches. The `?search=Oak` filter must return only matching projects. The test verifies the `filters` prop echoes back the search parameter; it does not assert the specific count of returned projects (which would be brittle given Scout's async re-indexing on some drivers). If the implementation calls `Project::search($search)->keys()` and uses `whereIn`, the test passes as long as the response is 200 with correct prop keys.
-
-### Test 4: Status filter
-
-```php
-#[Test]
-public function test_status_filter_returns_filtered_results(): void
-{
-    $user = User::factory()->create();
-    Project::factory()->create(['status' => ProjectStatus::Planned->value]);
-    Project::factory()->create(['status' => ProjectStatus::Completed->value]);
-
-    $response = $this->actingAs($user)->get('/projects?status=planned');
-
-    $response->assertOk()
-        ->assertInertia(fn ($page) => $page
-            ->component('Projects/Index')
-            ->has('filters', fn ($filters) => $filters
-                ->where('status', 'planned')
-                ->etc()
-            )
-        );
-}
-```
-
-### Test 5: Create page props
-
-```php
-#[Test]
-public function test_create_page_returns_statuses_and_priorities(): void
-{
-    $user = User::factory()->create();
-
-    $this->actingAs($user)
-        ->get('/projects/create')
-        ->assertOk()
-        ->assertInertia(fn ($page) => $page
-            ->component('Projects/Create')
-            ->has('statuses', count(ProjectStatus::cases()))
-            ->has('priorities', count(ProjectPriority::cases()))
-        );
-}
-```
-
-`has('statuses', 7)` verifies the prop is an array with exactly 7 items (matching the 7 enum cases). `has('priorities', 4)` verifies 4 items.
-
-### Test 6: Store creates project and redirects
-
-```php
-#[Test]
-public function test_store_creates_project_and_redirects_to_show(): void
-{
-    $user = User::factory()->create();
-
-    $response = $this->actingAs($user)->post('/projects', [
-        'title'  => 'My New Workbench',
-        'status' => ProjectStatus::Planned->value,
-    ]);
-
-    $this->assertDatabaseHas('projects', ['title' => 'My New Workbench']);
-
-    $project = Project::where('title', 'My New Workbench')->first();
-    $response->assertRedirect(route('projects.show', $project));
-}
-```
-
-`assertDatabaseHas` confirms the record was persisted. The redirect is asserted against the named route using the actual newly-created project slug.
-
-### Test 7: Store without title returns 422
-
-```php
-#[Test]
-public function test_store_with_missing_title_returns_validation_error(): void
-{
-    $user = User::factory()->create();
-
-    $this->actingAs($user)
-        ->post('/projects', [])
-        ->assertStatus(422);
-}
-```
-
-Inertia form submissions return 422 (not a session redirect) when `StoreProjectRequest` validation fails, because Inertia's `HandleValidationExceptions` middleware converts `ValidationException` to a 422 JSON response with the `X-Inertia` header. Using `assertStatus(422)` is correct for Inertia submissions. `assertSessionHasErrors` works for traditional form posts, but for Inertia-driven requests the 422 status check is more reliable.
-
-Alternative assertion if the frontend sends requests without the `X-Inertia` header in tests (which is the default when using `$this->post()`):
-
-```php
-->assertSessionHasErrors(['title']);
-```
-
-Both approaches are acceptable. The plan recommends `assertSessionHasErrors(['title'])` since `$this->post()` in Laravel tests does NOT automatically add the `X-Inertia` header, so validation failures will follow the traditional session flash redirect pattern (302 with errors in session).
-
-Revised test 7:
-
-```php
-#[Test]
-public function test_store_with_missing_title_returns_validation_error(): void
-{
-    $user = User::factory()->create();
-
-    $this->actingAs($user)
-        ->post('/projects', [])
-        ->assertSessionHasErrors(['title']);
-}
-```
-
-### Test 8: Show returns project prop
-
-```php
-#[Test]
-public function test_show_returns_project_prop(): void
-{
-    $user    = User::factory()->create();
-    $project = Project::factory()->create();
-
-    $this->actingAs($user)
-        ->get('/projects/' . $project->slug)
-        ->assertOk()
-        ->assertInertia(fn ($page) => $page
-            ->component('Projects/Show')
-            ->has('project')
-            ->where('project.id', $project->id)
-        );
-}
-```
-
-`where('project.id', $project->id)` verifies the correct project is passed. The dot-notation path traversal is supported by `AssertableInertia`.
-
-### Test 9: Edit returns project, statuses, priorities
-
-```php
-#[Test]
-public function test_edit_returns_project_statuses_and_priorities(): void
-{
-    $user    = User::factory()->create();
-    $project = Project::factory()->create();
-
-    $this->actingAs($user)
-        ->get('/projects/' . $project->slug . '/edit')
-        ->assertOk()
-        ->assertInertia(fn ($page) => $page
-            ->component('Projects/Edit')
-            ->has('project')
-            ->has('statuses', count(ProjectStatus::cases()))
-            ->has('priorities', count(ProjectPriority::cases()))
-        );
-}
-```
-
-### Test 10: Update saves and redirects
-
-```php
-#[Test]
-public function test_update_saves_changes_and_redirects_to_show(): void
-{
-    $user    = User::factory()->create();
-    $project = Project::factory()->create(['title' => 'Old Title']);
-
-    $response = $this->actingAs($user)
-        ->patch('/projects/' . $project->slug, ['title' => 'New Title']);
-
-    $this->assertDatabaseHas('projects', [
-        'id'    => $project->id,
-        'title' => 'New Title',
-    ]);
-
-    $response->assertRedirect(route('projects.show', $project->fresh()));
-}
-```
-
-`$project->fresh()` reloads from the database to pick up any model changes (the slug may not change on update, but using `fresh()` is safe).
-
-### Test 11: Update with invalid status returns 422
-
-```php
-#[Test]
-public function test_update_with_invalid_status_returns_validation_error(): void
-{
-    $user    = User::factory()->create();
-    $project = Project::factory()->create();
-
-    $this->actingAs($user)
-        ->patch('/projects/' . $project->slug, ['status' => 'not_a_real_status'])
-        ->assertSessionHasErrors(['status']);
-}
-```
-
-`UpdateProjectRequest` uses `Rule::enum(ProjectStatus::class)` for the `status` field. Submitting `'not_a_real_status'` triggers a validation failure.
-
-### Test 12: Destroy soft-deletes and redirects to index
-
-```php
-#[Test]
-public function test_destroy_soft_deletes_and_redirects_to_index(): void
-{
-    $user    = User::factory()->create();
-    $project = Project::factory()->create();
-
-    $response = $this->actingAs($user)
-        ->delete('/projects/' . $project->slug);
-
-    $this->assertSoftDeleted('projects', ['id' => $project->id]);
-
-    $response->assertRedirect(route('projects.index'));
-}
-```
-
-`assertSoftDeleted` checks that `deleted_at` is not null for the given row. This is distinct from `assertDatabaseMissing` which would fail since soft-deleted records remain in the table.
-
----
-
-## 7. Complete Final Test File
-
-```php
-<?php
-
-namespace Tests\Feature;
-
-use App\Enums\ProjectPriority;
-use App\Enums\ProjectStatus;
-use App\Models\Project;
-use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use PHPUnit\Framework\Attributes\Test;
-use Tests\TestCase;
-
-class ProjectControllerTest extends TestCase
-{
-    use RefreshDatabase;
-
-    #[Test]
-    public function test_guest_is_redirected_from_projects(): void
-    {
-        $this->get('/projects')->assertRedirect('/login');
-    }
-
-    #[Test]
-    public function test_authenticated_user_sees_projects_index_with_projects_and_filters(): void
-    {
-        $user = User::factory()->create();
-        Project::factory()->count(3)->create();
-
-        $this->actingAs($user)
-            ->get('/projects')
-            ->assertOk()
-            ->assertInertia(fn ($page) => $page
-                ->component('Projects/Index')
-                ->has('projects')
-                ->has('filters')
-            );
-    }
-
-    #[Test]
-    public function test_search_filter_returns_filtered_results(): void
-    {
-        $user = User::factory()->create();
-        Project::factory()->create(['title' => 'Oak Dining Table']);
-        Project::factory()->create(['title' => 'Walnut Bookshelf']);
-
-        $this->actingAs($user)
-            ->get('/projects?search=Oak')
-            ->assertOk()
-            ->assertInertia(fn ($page) => $page
-                ->component('Projects/Index')
-                ->has('projects')
-                ->has('filters', fn ($filters) => $filters
-                    ->where('search', 'Oak')
-                    ->etc()
-                )
-            );
-    }
-
-    #[Test]
-    public function test_status_filter_returns_filtered_results(): void
-    {
-        $user = User::factory()->create();
-        Project::factory()->create(['status' => ProjectStatus::Planned->value]);
-        Project::factory()->create(['status' => ProjectStatus::Completed->value]);
-
-        $this->actingAs($user)
-            ->get('/projects?status=planned')
-            ->assertOk()
-            ->assertInertia(fn ($page) => $page
-                ->component('Projects/Index')
-                ->has('filters', fn ($filters) => $filters
-                    ->where('status', 'planned')
-                    ->etc()
-                )
-            );
-    }
-
-    #[Test]
-    public function test_create_page_returns_statuses_and_priorities(): void
-    {
-        $user = User::factory()->create();
-
-        $this->actingAs($user)
-            ->get('/projects/create')
-            ->assertOk()
-            ->assertInertia(fn ($page) => $page
-                ->component('Projects/Create')
-                ->has('statuses', count(ProjectStatus::cases()))
-                ->has('priorities', count(ProjectPriority::cases()))
-            );
-    }
-
-    #[Test]
-    public function test_store_creates_project_and_redirects_to_show(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this->actingAs($user)->post('/projects', [
-            'title'  => 'My New Workbench',
-            'status' => ProjectStatus::Planned->value,
-        ]);
-
-        $this->assertDatabaseHas('projects', ['title' => 'My New Workbench']);
-
-        $project = Project::where('title', 'My New Workbench')->first();
-        $response->assertRedirect(route('projects.show', $project));
-    }
-
-    #[Test]
-    public function test_store_with_missing_title_returns_validation_error(): void
-    {
-        $user = User::factory()->create();
-
-        $this->actingAs($user)
-            ->post('/projects', [])
-            ->assertSessionHasErrors(['title']);
-    }
-
-    #[Test]
-    public function test_show_returns_project_prop(): void
-    {
-        $user    = User::factory()->create();
-        $project = Project::factory()->create();
-
-        $this->actingAs($user)
-            ->get('/projects/' . $project->slug)
-            ->assertOk()
-            ->assertInertia(fn ($page) => $page
-                ->component('Projects/Show')
-                ->has('project')
-                ->where('project.id', $project->id)
-            );
-    }
-
-    #[Test]
-    public function test_edit_returns_project_statuses_and_priorities(): void
-    {
-        $user    = User::factory()->create();
-        $project = Project::factory()->create();
-
-        $this->actingAs($user)
-            ->get('/projects/' . $project->slug . '/edit')
-            ->assertOk()
-            ->assertInertia(fn ($page) => $page
-                ->component('Projects/Edit')
-                ->has('project')
-                ->has('statuses', count(ProjectStatus::cases()))
-                ->has('priorities', count(ProjectPriority::cases()))
-            );
-    }
-
-    #[Test]
-    public function test_update_saves_changes_and_redirects_to_show(): void
-    {
-        $user    = User::factory()->create();
-        $project = Project::factory()->create(['title' => 'Old Title']);
-
-        $response = $this->actingAs($user)
-            ->patch('/projects/' . $project->slug, ['title' => 'New Title']);
-
-        $this->assertDatabaseHas('projects', [
-            'id'    => $project->id,
-            'title' => 'New Title',
-        ]);
-
-        $response->assertRedirect(route('projects.show', $project->fresh()));
-    }
-
-    #[Test]
-    public function test_update_with_invalid_status_returns_validation_error(): void
-    {
-        $user    = User::factory()->create();
-        $project = Project::factory()->create();
-
-        $this->actingAs($user)
-            ->patch('/projects/' . $project->slug, ['status' => 'not_a_real_status'])
-            ->assertSessionHasErrors(['status']);
-    }
-
-    #[Test]
-    public function test_destroy_soft_deletes_and_redirects_to_index(): void
-    {
-        $user    = User::factory()->create();
-        $project = Project::factory()->create();
-
-        $response = $this->actingAs($user)
-            ->delete('/projects/' . $project->slug);
-
-        $this->assertSoftDeleted('projects', ['id' => $project->id]);
-
-        $response->assertRedirect(route('projects.index'));
-    }
-}
-```
-
----
-
-## 8. Complete Final Controller File
+The controller must pass real data to Inertia and perform real persistence for the tests to pass.
 
 ```php
 <?php
 
 namespace App\Http\Controllers;
 
-use App\Enums\ProjectPriority;
-use App\Enums\ProjectStatus;
-use App\Http\Requests\StoreProjectRequest;
-use App\Http\Requests\UpdateProjectRequest;
-use App\Models\Project;
-use App\Models\TimeEntry;
+use App\Http\Requests\StoreSupplierRequest;
+use App\Http\Requests\UpdateSupplierRequest;
+use App\Models\Supplier;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
 
-class ProjectController extends Controller
+class SupplierController extends Controller
 {
     public function index(Request $request): Response
     {
-        $query = Project::query();
+        $filters = $request->only(['search']);
 
-        if ($search = $request->input('search')) {
-            $ids = Project::search($search)->keys();
-            $query->whereIn('id', $ids);
+        $query = Supplier::query();
+
+        if ($search = $filters['search'] ?? null) {
+            $query->where('name', 'like', '%' . $search . '%');
         }
 
-        if ($status = $request->input('status')) {
-            $query->where('status', $status);
-        }
+        $suppliers = $query->orderBy('name')->paginate(20)->withQueryString();
 
-        $projects = $query->latest()->paginate(20)->withQueryString();
-
-        return Inertia::render('Projects/Index', [
-            'projects' => $projects,
-            'filters'  => $request->only(['search', 'status']),
-            'statuses' => collect(ProjectStatus::cases())
-                ->map(fn ($s) => ['value' => $s->value, 'label' => $s->label()])
-                ->all(),
+        return Inertia::render('Suppliers/Index', [
+            'suppliers' => $suppliers,
+            'filters'   => $filters,
         ]);
     }
 
     public function create(): Response
     {
-        return Inertia::render('Projects/Create', [
-            'statuses'   => collect(ProjectStatus::cases())
-                ->map(fn ($s) => ['value' => $s->value, 'label' => $s->label()])
-                ->all(),
-            'priorities' => collect(ProjectPriority::cases())
-                ->map(fn ($p) => ['value' => $p->value, 'label' => $p->label()])
-                ->all(),
+        return Inertia::render('Suppliers/Create');
+    }
+
+    public function store(StoreSupplierRequest $request): RedirectResponse
+    {
+        $supplier = Supplier::create($request->validated());
+
+        return redirect()->route('suppliers.show', $supplier)
+            ->with('success', 'Supplier created successfully.');
+    }
+
+    public function show(Supplier $supplier): Response
+    {
+        return Inertia::render('Suppliers/Show', [
+            'supplier' => $supplier,
         ]);
     }
 
-    public function store(StoreProjectRequest $request): RedirectResponse
+    public function edit(Supplier $supplier): Response
     {
-        $project = Project::create($request->validated());
-
-        return redirect()->route('projects.show', $project);
-    }
-
-    public function show(Project $project): Response
-    {
-        return Inertia::render('Projects/Show', [
-            'project' => $project,
+        return Inertia::render('Suppliers/Edit', [
+            'supplier' => $supplier,
         ]);
     }
 
-    public function edit(Project $project): Response
+    public function update(UpdateSupplierRequest $request, Supplier $supplier): RedirectResponse
     {
-        return Inertia::render('Projects/Edit', [
-            'project'    => $project,
-            'statuses'   => collect(ProjectStatus::cases())
-                ->map(fn ($s) => ['value' => $s->value, 'label' => $s->label()])
-                ->all(),
-            'priorities' => collect(ProjectPriority::cases())
-                ->map(fn ($p) => ['value' => $p->value, 'label' => $p->label()])
-                ->all(),
-        ]);
+        $supplier->update($request->validated());
+
+        return redirect()->route('suppliers.show', $supplier)
+            ->with('success', 'Supplier updated successfully.');
     }
 
-    public function update(UpdateProjectRequest $request, Project $project): RedirectResponse
+    public function destroy(Supplier $supplier): RedirectResponse
     {
-        $project->update($request->validated());
+        $supplier->delete();
 
-        return redirect()->route('projects.show', $project);
-    }
-
-    public function destroy(Project $project): RedirectResponse
-    {
-        $project->delete();
-
-        return redirect()->route('projects.index');
-    }
-
-    public function uploadPhoto(Request $request, Project $project): RedirectResponse
-    {
-        return redirect()->back();
-    }
-
-    public function logTime(Request $request, Project $project): RedirectResponse
-    {
-        return redirect()->back();
-    }
-
-    public function stopTimer(Project $project, TimeEntry $entry): RedirectResponse
-    {
-        return redirect()->back();
-    }
-
-    public function attachMaterial(Request $request, Project $project): RedirectResponse
-    {
-        return redirect()->back();
-    }
-
-    public function addNote(Request $request, Project $project): RedirectResponse
-    {
-        return redirect()->back();
+        return redirect()->route('suppliers.index')
+            ->with('success', 'Supplier deleted successfully.');
     }
 }
 ```
 
 ---
 
-## 9. Key Technical Decisions
+## 5. Form Request Implementation
 
-### Decision 1: PHPUnit 11 class syntax, not Pest
+### StoreSupplierRequest
 
-The existing test file and the governance rules for this task both specify PHPUnit 11 with `#[Test]` attributes. All 12 test methods are public methods on the `ProjectControllerTest` class extending `TestCase`. No `it()` or `test()` Pest-style functions are used.
+```php
+<?php
 
-### Decision 2: `assertSessionHasErrors` for validation failure tests
+namespace App\Http\Requests;
 
-`$this->post()` in Laravel tests does not include the `X-Inertia: true` header by default. This means validation failures follow the traditional Laravel behaviour: a 302 redirect with errors flashed to the session. `assertSessionHasErrors(['title'])` is correct. If tests were written with the Inertia test header (`withHeaders(['X-Inertia' => 'true'])`), then `assertStatus(422)` would be correct instead.
+use Illuminate\Foundation\Http\FormRequest;
 
-### Decision 3: `assertSoftDeleted` not `assertDatabaseMissing`
+class StoreSupplierRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
 
-The `Project` model uses `SoftDeletes`. A soft-deleted project still exists in the `projects` table with `deleted_at` set. `assertDatabaseMissing` would incorrectly pass if the record was hard-deleted, and would fail if it was only soft-deleted. `assertSoftDeleted('projects', ['id' => $project->id])` is the correct assertion.
+    public function rules(): array
+    {
+        return [
+            'name'         => ['required', 'string', 'max:255'],
+            'contact_name' => ['nullable', 'string', 'max:255'],
+            'phone'        => ['nullable', 'string', 'max:50'],
+            'email'        => ['nullable', 'email', 'max:255'],
+            'website'      => ['nullable', 'url', 'max:500'],
+            'address'      => ['nullable', 'string'],
+            'notes'        => ['nullable', 'string'],
+        ];
+    }
+}
+```
 
-### Decision 4: Controller must be updated for tests to pass
+### UpdateSupplierRequest
 
-The existing controller stubs (`redirect()->back()` for all mutations, no props in Inertia renders) will cause the new tests to fail. The controller must be updated with real implementation as part of this task. Both files are modified together.
+```php
+<?php
 
-### Decision 5: Scout database driver search
+namespace App\Http\Requests;
 
-`Project` uses `Laravel\Scout\Searchable` with the database driver. The database driver performs synchronous FULL-TEXT or LIKE searches within the same MySQL connection. `RefreshDatabase` ensures a clean state. No async queue workers are needed. The search filter test creates two known projects and verifies the filters prop echoes back correctly — it does not assert row counts in the `projects` pagination to avoid brittleness.
+use Illuminate\Foundation\Http\FormRequest;
 
-### Decision 6: `has('projects')` not `has('projects.data')`
+class UpdateSupplierRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
 
-The `index` action returns `$query->paginate(20)`. When Inertia serializes a `LengthAwarePaginator`, it wraps it as `{ data: [...], links: [...], meta: {...} }`. However, `assertInertia`'s `has('projects')` only checks the top-level key exists. If the implementation team or the reviewer wants to assert count of items specifically, they can use `has('projects.data', 3)` for the test that creates 3 projects. The plan uses `has('projects')` for simplicity, matching the acceptance criteria which only requires the prop to be present.
-
-### Decision 7: No cross-authentication tests
-
-This task does not test access control between users (e.g., "user A cannot edit user B's project") because the application is a solo tool — there is no per-user ownership of projects in the current schema. All authenticated users see all projects.
+    public function rules(): array
+    {
+        return [
+            'name'         => ['sometimes', 'required', 'string', 'max:255'],
+            'contact_name' => ['nullable', 'string', 'max:255'],
+            'phone'        => ['nullable', 'string', 'max:50'],
+            'email'        => ['nullable', 'email', 'max:255'],
+            'website'      => ['nullable', 'url', 'max:500'],
+            'address'      => ['nullable', 'string'],
+            'notes'        => ['nullable', 'string'],
+        ];
+    }
+}
+```
 
 ---
 
-## 10. Acceptance Criteria Traceability
+## 6. Route Registration
 
-| Acceptance criterion | Test method |
-|----------------------|------------|
-| unauthenticated GET /projects redirects to login | `test_guest_is_redirected_from_projects` |
-| authenticated GET /projects returns Inertia Projects/Index with projects and filters props | `test_authenticated_user_sees_projects_index_with_projects_and_filters` |
-| GET /projects?search=foo returns filtered results | `test_search_filter_returns_filtered_results` |
-| GET /projects?status=planned returns filtered results | `test_status_filter_returns_filtered_results` |
-| GET /projects/create returns Projects/Create with statuses and priorities | `test_create_page_returns_statuses_and_priorities` |
-| POST /projects with valid data creates project, redirects to show page | `test_store_creates_project_and_redirects_to_show` |
-| POST /projects with missing title returns 422 | `test_store_with_missing_title_returns_validation_error` |
-| GET /projects/{slug} returns Projects/Show with project prop | `test_show_returns_project_prop` |
-| GET /projects/{slug}/edit returns Projects/Edit with project, statuses, priorities | `test_edit_returns_project_statuses_and_priorities` |
-| PATCH /projects/{slug} updates project, redirects | `test_update_saves_changes_and_redirects_to_show` |
-| PATCH /projects/{slug} with invalid status returns 422 | `test_update_with_invalid_status_returns_validation_error` |
-| DELETE /projects/{slug} soft-deletes, redirects to index | `test_destroy_soft_deletes_and_redirects_to_index` |
-| All use #[Test] attribute, RefreshDatabase, factories | All 12 tests |
+Add inside the existing `Route::middleware(['auth', 'verified'])` group in `routes/web.php`:
+
+```php
+// Suppliers (full resource: index, create, store, show, edit, update, destroy)
+Route::resource('suppliers', SupplierController::class);
+```
+
+Also add the import at the top of the file:
+
+```php
+use App\Http\Controllers\SupplierController;
+```
 
 ---
 
-## 11. Risks
+## 7. Test Class Structure
 
-### Risk 1: `assertInertia` prop shape depends on paginator serialization
+```php
+<?php
 
-`Project::paginate(20)` serializes as a paginator object. `assertInertia`'s `has('projects')` checks the key exists. If a future test needs to assert item counts, use `has('projects.data', N)`. The current plan does not assert item counts to avoid brittleness with factory data quantity.
+namespace Tests\Feature;
 
-**Mitigation:** Accept `has('projects')` as sufficient for the acceptance criteria. The show/edit/update tests use `where('project.id', ...)` for precision.
+use App\Models\Material;
+use App\Models\Supplier;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
 
-### Risk 2: Scout database driver and `RefreshDatabase`
+class SupplierControllerTest extends TestCase
+{
+    use RefreshDatabase;
 
-Scout's database driver indexes data in the same MySQL database. `RefreshDatabase` wraps each test in a transaction (or truncates tables). Projects created in the test are searchable because the database driver queries the `projects` table directly. There is no external Elasticsearch/Algolia index to worry about.
+    private User $user;
 
-**Mitigation:** No special setup needed. The search test creates known projects and checks the `filters` prop echoes the search parameter — sufficient to verify the controller passes through the filter.
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->user = User::factory()->create();
+    }
 
-### Risk 3: `slug` uniqueness in factory tests
+    // ... 14 test methods
+}
+```
 
-`Project::booted()` generates slugs from `Str::slug($project->title)`. If two factory projects get the same title (possible with `fake()->sentence(3)`), the second gets a `-1` suffix. All slug-based URL assertions use `$project->slug` (the actual generated slug), so this is safe. Tests never hardcode a slug.
+The `private User $user` property is populated in `setUp()` once per test, satisfying the
+class structure requirement. Individual tests that do not need `$this->user` (e.g., the guest
+redirect test) still have it available but ignore it — this is acceptable.
 
-**Mitigation:** No action required. Using `$project->slug` from the model instance is always correct.
+---
 
-### Risk 4: `verified` middleware on project routes
+## 8. Detailed Test Method Plan
 
-The `projects` resource routes are inside `Route::middleware(['auth', 'verified'])`. If the test user's `email_verified_at` is null, requests will redirect to the email verification notice page rather than the actual route.
+### Test 1: guest_is_redirected_from_suppliers
 
-**Mitigation:** `User::factory()->create()` sets `email_verified_at` to `now()` by default in the standard Laravel Breeze `UserFactory`. Verify this is the case in the project's `UserFactory`. If `email_verified_at` defaults to null, add `->create(['email_verified_at' => now()])` in all `actingAs` calls, or add a `verified()` factory state.
+```php
+#[Test]
+public function guest_is_redirected_from_suppliers(): void
+{
+    $this->get('/suppliers')->assertRedirect('/login');
+}
+```
+
+Rationale: unauthenticated GET against an auth-guarded route must redirect to `/login`. No `actingAs` call used. `$this->user` from `setUp` is created but not used in this test — that is acceptable.
+
+### Test 2: authenticated_user_can_view_suppliers_index
+
+```php
+#[Test]
+public function authenticated_user_can_view_suppliers_index(): void
+{
+    $this->actingAs($this->user)
+        ->get('/suppliers')
+        ->assertOk()
+        ->assertInertia(fn ($page) => $page
+            ->component('Suppliers/Index')
+            ->has('suppliers')
+            ->has('filters')
+        );
+}
+```
+
+Rationale: verifies the Inertia component name and the presence of both required props.
+
+### Test 3: index_search_filters_by_name
+
+```php
+#[Test]
+public function index_search_filters_by_name(): void
+{
+    $supplier1 = Supplier::factory()->create(['name' => 'Woodcraft Supply']);
+    $supplier2 = Supplier::factory()->create(['name' => 'Rockler Tools']);
+
+    $this->actingAs($this->user)
+        ->get('/suppliers?search=Woodcraft')
+        ->assertOk()
+        ->assertInertia(fn ($page) => $page
+            ->component('Suppliers/Index')
+            ->has('filters', fn ($filters) => $filters
+                ->where('search', 'Woodcraft')
+                ->etc()
+            )
+        );
+}
+```
+
+Rationale: creates 2 suppliers with distinct names, searches by name1's distinctive term. Verifies the `filters` prop echoes the search value. Does not assert row count in the paginated result to avoid brittleness; the filter echo is sufficient to confirm the controller passes the parameter through.
+
+### Test 4: create_page_renders
+
+```php
+#[Test]
+public function create_page_renders(): void
+{
+    $this->actingAs($this->user)
+        ->get('/suppliers/create')
+        ->assertOk()
+        ->assertInertia(fn ($page) => $page
+            ->component('Suppliers/Create')
+        );
+}
+```
+
+Rationale: the create page has no dynamic props (no enums, no related data) so only the component name is asserted.
+
+### Test 5: store_creates_supplier_and_redirects_to_show
+
+```php
+#[Test]
+public function store_creates_supplier_and_redirects_to_show(): void
+{
+    $response = $this->actingAs($this->user)->post('/suppliers', [
+        'name' => 'Acme Lumber Co',
+    ]);
+
+    $this->assertDatabaseHas('suppliers', ['name' => 'Acme Lumber Co']);
+
+    $supplier = Supplier::where('name', 'Acme Lumber Co')->first();
+    $response->assertRedirect(route('suppliers.show', $supplier));
+}
+```
+
+Rationale: only `name` is required. Verifies both the DB record and the redirect URL. The redirect assertion uses the actual created model to generate the route, so the ULID in the URL is always correct.
+
+### Test 6: store_requires_name
+
+```php
+#[Test]
+public function store_requires_name(): void
+{
+    $this->actingAs($this->user)
+        ->post('/suppliers', [])
+        ->assertSessionHasErrors(['name']);
+}
+```
+
+Rationale: `$this->post()` in Laravel tests does not include the `X-Inertia: true` header by default. Validation failures therefore follow the traditional Laravel redirect-with-session-flash pattern rather than returning 422. `assertSessionHasErrors(['name'])` is the correct assertion.
+
+### Test 7: store_rejects_invalid_email
+
+```php
+#[Test]
+public function store_rejects_invalid_email(): void
+{
+    $this->actingAs($this->user)
+        ->post('/suppliers', [
+            'name'  => 'Valid Name',
+            'email' => 'not-an-email',
+        ])
+        ->assertSessionHasErrors(['email']);
+}
+```
+
+Rationale: the `email` rule in `StoreSupplierRequest` is `['nullable', 'email', ...]`. Providing a malformed email string should trigger a validation error on the `email` key.
+
+### Test 8: store_rejects_invalid_website_url
+
+```php
+#[Test]
+public function store_rejects_invalid_website_url(): void
+{
+    $this->actingAs($this->user)
+        ->post('/suppliers', [
+            'name'    => 'Valid Name',
+            'website' => 'not-a-url',
+        ])
+        ->assertSessionHasErrors(['website']);
+}
+```
+
+Rationale: the `website` rule is `['nullable', 'url', ...]`. A plain string without a scheme fails the `url` rule.
+
+### Test 9: show_returns_supplier
+
+```php
+#[Test]
+public function show_returns_supplier(): void
+{
+    $supplier = Supplier::factory()->create();
+
+    $this->actingAs($this->user)
+        ->get('/suppliers/' . $supplier->id)
+        ->assertOk()
+        ->assertInertia(fn ($page) => $page
+            ->component('Suppliers/Show')
+            ->has('supplier')
+            ->where('supplier.id', $supplier->id)
+        );
+}
+```
+
+Rationale: `$supplier->id` is the ULID, which is the route key. `where('supplier.id', $supplier->id)` confirms the correct supplier is passed, not just any supplier.
+
+### Test 10: edit_returns_supplier
+
+```php
+#[Test]
+public function edit_returns_supplier(): void
+{
+    $supplier = Supplier::factory()->create();
+
+    $this->actingAs($this->user)
+        ->get('/suppliers/' . $supplier->id . '/edit')
+        ->assertOk()
+        ->assertInertia(fn ($page) => $page
+            ->component('Suppliers/Edit')
+            ->has('supplier')
+            ->where('supplier.id', $supplier->id)
+        );
+}
+```
+
+Rationale: same shape as show. Confirms edit loads the correct record.
+
+### Test 11: update_saves_changes_and_redirects_to_show
+
+```php
+#[Test]
+public function update_saves_changes_and_redirects_to_show(): void
+{
+    $supplier = Supplier::factory()->create(['name' => 'Old Name']);
+
+    $response = $this->actingAs($this->user)
+        ->patch('/suppliers/' . $supplier->id, ['name' => 'New Name']);
+
+    $this->assertDatabaseHas('suppliers', [
+        'id'   => $supplier->id,
+        'name' => 'New Name',
+    ]);
+
+    $response->assertRedirect(route('suppliers.show', $supplier));
+}
+```
+
+Rationale: verifies the DB was updated and the redirect targets the show route. `$supplier` (unrefreshed) is used in the route helper because the ULID does not change on update.
+
+### Test 12: update_with_invalid_email_returns_error
+
+```php
+#[Test]
+public function update_with_invalid_email_returns_error(): void
+{
+    $supplier = Supplier::factory()->create();
+
+    $this->actingAs($this->user)
+        ->patch('/suppliers/' . $supplier->id, [
+            'email' => 'not-an-email',
+        ])
+        ->assertSessionHasErrors(['email']);
+}
+```
+
+Rationale: `UpdateSupplierRequest` applies the same `email` validation as the store request. Sending an invalid email on update must fail validation on the `email` key.
+
+### Test 13: destroy_hard_deletes_supplier
+
+```php
+#[Test]
+public function destroy_hard_deletes_supplier(): void
+{
+    $supplier = Supplier::factory()->create();
+
+    $response = $this->actingAs($this->user)
+        ->delete('/suppliers/' . $supplier->id);
+
+    $this->assertDatabaseMissing('suppliers', ['id' => $supplier->id]);
+    $response->assertRedirect(route('suppliers.index'));
+}
+```
+
+Rationale: `Supplier` has no `SoftDeletes` trait, so `delete()` performs a hard delete. `assertDatabaseMissing` confirms the row is gone from the `suppliers` table. `assertSoftDeleted` must NOT be used here — it would check `deleted_at` which does not exist on this model.
+
+### Test 14: destroy_nullifies_supplier_id_on_related_materials
+
+```php
+#[Test]
+public function destroy_nullifies_supplier_id_on_related_materials(): void
+{
+    $supplier = Supplier::factory()->create();
+    $material = Material::factory()->create(['supplier_id' => $supplier->id]);
+
+    $this->actingAs($this->user)
+        ->delete('/suppliers/' . $supplier->id);
+
+    // Material record still exists (it uses soft deletes, not hard delete)
+    $this->assertDatabaseHas('materials', ['id' => $material->id]);
+
+    // supplier_id has been nullified by the DB cascade constraint
+    $this->assertDatabaseHas('materials', [
+        'id'          => $material->id,
+        'supplier_id' => null,
+    ]);
+}
+```
+
+Rationale: the `materials` migration defines
+`->foreignUlid('supplier_id')->nullable()->constrained('suppliers')->nullOnDelete()`.
+MySQL enforces this constraint at the database level; when the supplier row is deleted, all
+referencing `materials.supplier_id` values are set to `NULL` automatically. No application
+code (no observer, no event) is required. The test verifies this DB-level behavior by:
+1. Creating a supplier and a material that references it.
+2. Deleting the supplier via the controller.
+3. Asserting the material row still exists (it is not deleted).
+4. Asserting `supplier_id` is now `null` on that material row.
+
+The material still exists because `Material` uses `SoftDeletes` with no cascade delete from
+the supplier side — only the FK column is nullified.
+
+---
+
+## 9. Complete Test File
+
+```php
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Material;
+use App\Models\Supplier;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+
+class SupplierControllerTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private User $user;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->user = User::factory()->create();
+    }
+
+    #[Test]
+    public function guest_is_redirected_from_suppliers(): void
+    {
+        $this->get('/suppliers')->assertRedirect('/login');
+    }
+
+    #[Test]
+    public function authenticated_user_can_view_suppliers_index(): void
+    {
+        $this->actingAs($this->user)
+            ->get('/suppliers')
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->component('Suppliers/Index')
+                ->has('suppliers')
+                ->has('filters')
+            );
+    }
+
+    #[Test]
+    public function index_search_filters_by_name(): void
+    {
+        $supplier1 = Supplier::factory()->create(['name' => 'Woodcraft Supply']);
+        $supplier2 = Supplier::factory()->create(['name' => 'Rockler Tools']);
+
+        $this->actingAs($this->user)
+            ->get('/suppliers?search=Woodcraft')
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->component('Suppliers/Index')
+                ->has('filters', fn ($filters) => $filters
+                    ->where('search', 'Woodcraft')
+                    ->etc()
+                )
+            );
+    }
+
+    #[Test]
+    public function create_page_renders(): void
+    {
+        $this->actingAs($this->user)
+            ->get('/suppliers/create')
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->component('Suppliers/Create')
+            );
+    }
+
+    #[Test]
+    public function store_creates_supplier_and_redirects_to_show(): void
+    {
+        $response = $this->actingAs($this->user)->post('/suppliers', [
+            'name' => 'Acme Lumber Co',
+        ]);
+
+        $this->assertDatabaseHas('suppliers', ['name' => 'Acme Lumber Co']);
+
+        $supplier = Supplier::where('name', 'Acme Lumber Co')->first();
+        $response->assertRedirect(route('suppliers.show', $supplier));
+    }
+
+    #[Test]
+    public function store_requires_name(): void
+    {
+        $this->actingAs($this->user)
+            ->post('/suppliers', [])
+            ->assertSessionHasErrors(['name']);
+    }
+
+    #[Test]
+    public function store_rejects_invalid_email(): void
+    {
+        $this->actingAs($this->user)
+            ->post('/suppliers', [
+                'name'  => 'Valid Name',
+                'email' => 'not-an-email',
+            ])
+            ->assertSessionHasErrors(['email']);
+    }
+
+    #[Test]
+    public function store_rejects_invalid_website_url(): void
+    {
+        $this->actingAs($this->user)
+            ->post('/suppliers', [
+                'name'    => 'Valid Name',
+                'website' => 'not-a-url',
+            ])
+            ->assertSessionHasErrors(['website']);
+    }
+
+    #[Test]
+    public function show_returns_supplier(): void
+    {
+        $supplier = Supplier::factory()->create();
+
+        $this->actingAs($this->user)
+            ->get('/suppliers/' . $supplier->id)
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->component('Suppliers/Show')
+                ->has('supplier')
+                ->where('supplier.id', $supplier->id)
+            );
+    }
+
+    #[Test]
+    public function edit_returns_supplier(): void
+    {
+        $supplier = Supplier::factory()->create();
+
+        $this->actingAs($this->user)
+            ->get('/suppliers/' . $supplier->id . '/edit')
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->component('Suppliers/Edit')
+                ->has('supplier')
+                ->where('supplier.id', $supplier->id)
+            );
+    }
+
+    #[Test]
+    public function update_saves_changes_and_redirects_to_show(): void
+    {
+        $supplier = Supplier::factory()->create(['name' => 'Old Name']);
+
+        $response = $this->actingAs($this->user)
+            ->patch('/suppliers/' . $supplier->id, ['name' => 'New Name']);
+
+        $this->assertDatabaseHas('suppliers', [
+            'id'   => $supplier->id,
+            'name' => 'New Name',
+        ]);
+
+        $response->assertRedirect(route('suppliers.show', $supplier));
+    }
+
+    #[Test]
+    public function update_with_invalid_email_returns_error(): void
+    {
+        $supplier = Supplier::factory()->create();
+
+        $this->actingAs($this->user)
+            ->patch('/suppliers/' . $supplier->id, [
+                'email' => 'not-an-email',
+            ])
+            ->assertSessionHasErrors(['email']);
+    }
+
+    #[Test]
+    public function destroy_hard_deletes_supplier(): void
+    {
+        $supplier = Supplier::factory()->create();
+
+        $response = $this->actingAs($this->user)
+            ->delete('/suppliers/' . $supplier->id);
+
+        $this->assertDatabaseMissing('suppliers', ['id' => $supplier->id]);
+        $response->assertRedirect(route('suppliers.index'));
+    }
+
+    #[Test]
+    public function destroy_nullifies_supplier_id_on_related_materials(): void
+    {
+        $supplier = Supplier::factory()->create();
+        $material = Material::factory()->create(['supplier_id' => $supplier->id]);
+
+        $this->actingAs($this->user)
+            ->delete('/suppliers/' . $supplier->id);
+
+        $this->assertDatabaseHas('materials', ['id' => $material->id]);
+        $this->assertDatabaseHas('materials', [
+            'id'          => $material->id,
+            'supplier_id' => null,
+        ]);
+    }
+}
+```
+
+---
+
+## 10. Key Decisions with Rationale
+
+### Decision 1: Hard delete — assertDatabaseMissing, never assertSoftDeleted
+
+`App\Models\Supplier` does not have the `SoftDeletes` trait. The `suppliers` table has no
+`deleted_at` column. Calling `$supplier->delete()` executes a hard `DELETE` SQL statement.
+`assertDatabaseMissing('suppliers', ['id' => $supplier->id])` is the correct assertion.
+Using `assertSoftDeleted` would throw a runtime error because `deleted_at` does not exist on
+the `suppliers` table.
+
+### Decision 2: DB cascade nullification via FK constraint, not application code
+
+The `nullOnDelete()` constraint in the `create_materials_table` migration is a MySQL-level
+`ON DELETE SET NULL` foreign key rule. It fires inside the MySQL transaction when `DELETE FROM
+suppliers WHERE id = ?` executes — no Laravel observer, model event, or service class is
+needed. The test exercises this by creating a real material row with `supplier_id` set to the
+supplier's ULID, then deleting the supplier and checking the material row's `supplier_id` became
+`null`. This works correctly under `RefreshDatabase` because the migration runs fresh for each
+test and the FK constraint is active.
+
+### Decision 3: assertSessionHasErrors for all validation tests
+
+`$this->post()` and `$this->patch()` in Laravel's `TestCase` do not attach the `X-Inertia: true`
+header. Without that header, the Inertia exception handler does not convert validation failures
+to 422 JSON responses; instead, Laravel's standard behavior applies: redirect back with errors
+flashed to the session. `assertSessionHasErrors(['name'])`, `assertSessionHasErrors(['email'])`,
+and `assertSessionHasErrors(['website'])` are all correct for this scenario.
+
+### Decision 4: setUp() with private User $user
+
+The task spec requires this class structure. `setUp()` calls `parent::setUp()` first (required
+by `RefreshDatabase` to wrap the test in a transaction), then creates the user. Each test method
+uses `$this->user` via `$this->actingAs($this->user)`. The guest test ignores `$this->user`
+but this is harmless — one extra user row in the DB does not affect the unauthenticated request
+test.
+
+### Decision 5: ULID route key, not slug
+
+`Supplier` extends `Model` with `HasUlids` but does NOT override `getRouteKeyName()`. The
+default Eloquent route key is `id`. URL segments in all tests use `$supplier->id` (the ULID
+string). This is consistent with how `MaterialController` tests use `$material->id`.
+
+### Decision 6: Supplier search uses LIKE, not Scout
+
+`Supplier` does not use `Laravel\Scout\Searchable`. The controller's index search is implemented
+as a simple `WHERE name LIKE '%term%'` query. This is synchronous, predictable in tests, and
+requires no Scout index setup. The search filter test verifies the `filters` prop contains the
+search term, which confirms the controller reads and passes the parameter. Asserting exact
+result counts is avoided to keep the test non-brittle.
+
+### Decision 7: No Inertia view files needed for tests to pass
+
+`assertInertia` in Laravel tests validates the Inertia response payload (component name and
+props) but does NOT attempt to render the React component. The `Suppliers/Index` etc. JSX files
+do not need to exist for the tests to pass. This is a deliberate design of the Inertia testing
+helper.
+
+---
+
+## 11. Verified Dependencies
+
+| Dependency | Verified |
+|---|---|
+| `App\Models\Supplier` exists with `HasUlids`, `HasFactory` | Yes — read source |
+| `App\Models\Material` exists with `supplier_id` fillable | Yes — read source |
+| `Database\Factories\SupplierFactory` exists with `name` via `fake()->company()` | Yes — read source |
+| `Database\Factories\MaterialFactory` accepts `supplier_id` as overrideable attribute | Yes — `supplier_id` is in `definition()` as `null`, overrideable |
+| `materials` migration has `->nullOnDelete()` on `supplier_id` FK | Yes — read migration source |
+| `suppliers` migration has NO `softDeletes()` column | Yes — read migration source |
+| `UserFactory` sets `email_verified_at => now()` by default | Yes — read source |
+| PHPUnit 11.5.55 is installed | Yes — application-info output |
+| `inertiajs/inertia-laravel` 2.0.21 is installed (provides `assertInertia`) | Yes — application-info output |
+| No existing `SupplierController` to conflict with | Yes — confirmed via glob search |
+| No existing `suppliers` routes to conflict with | Yes — confirmed via list-routes returning empty |
+| No existing `StoreSupplierRequest` or `UpdateSupplierRequest` | Yes — confirmed via glob search of Requests directory |
+
+---
+
+## 12. Risks
+
+### Risk 1: RefreshDatabase and MySQL FK constraints
+
+`RefreshDatabase` by default uses database transactions in SQLite but uses `TRUNCATE` in MySQL.
+With MySQL and `RefreshDatabase`, tables are truncated in reverse dependency order, which
+respects FK constraints. The `nullOnDelete()` constraint is a MySQL-native behavior that is
+active during the test. There is no risk of the test failing due to FK constraint violations on
+truncation.
+
+Mitigation: None required. The existing test suite already uses `RefreshDatabase` with MySQL
+(via Sail) for all other feature tests without issue.
+
+### Risk 2: `assertDatabaseHas` with `supplier_id => null`
+
+`assertDatabaseHas('materials', ['id' => $material->id, 'supplier_id' => null])` uses an
+equality check. Laravel's `assertDatabaseHas` translates `null` values to `IS NULL` SQL
+conditions correctly as of Laravel 9+. This is confirmed safe on Laravel 12.
+
+Mitigation: None required. Standard Laravel behavior.
+
+### Risk 3: Supplier factory name collisions
+
+`SupplierFactory` uses `fake()->company()` which can theoretically produce the same company
+name in two factories within the same test. The `suppliers` table has no unique constraint on
+`name`. Even if two suppliers share a name, `store_creates_supplier_and_redirects_to_show`
+uses `Supplier::where('name', 'Acme Lumber Co')->first()` which is safe because no other
+factory creates a supplier with that exact hardcoded name within the same test.
+
+Mitigation: The hardcoded name `'Acme Lumber Co'` is sufficiently distinctive. No risk.
+
+### Risk 4: Missing Inertia ServiceProvider or test macro
+
+`assertInertia` is provided by the `inertia/laravel` package's `ServiceProvider`. If it were
+not registered, the test would fail with a "method not found" error. Since `inertia/laravel`
+2.0.21 is installed and listed in `config/app.php` auto-discovery, the macro is available.
+
+Mitigation: None required.
+
+### Risk 5: `update_saves_changes_and_redirects_to_show` redirect URL
+
+The test asserts `$response->assertRedirect(route('suppliers.show', $supplier))`. After
+`$supplier->update(...)`, the supplier's ULID (primary key) does not change. Using the
+original `$supplier` variable (not `$supplier->fresh()`) in the route helper is safe because
+the ULID is the route key and does not mutate on update.
+
+Mitigation: None required, but the implementation notes include this explanation to prevent
+future developers from adding an unnecessary `->fresh()` call.
+
+---
+
+## 13. Acceptance Criteria Coverage
+
+| Spec requirement | Test method(s) | Assertion(s) |
+|---|---|---|
+| guest redirected from GET /suppliers | `guest_is_redirected_from_suppliers` | `assertRedirect('/login')` |
+| index returns Inertia component with suppliers + filters | `authenticated_user_can_view_suppliers_index` | `assertInertia` component + has('suppliers') + has('filters') |
+| index filters by name search | `index_search_filters_by_name` | `assertInertia` filters.search echoed |
+| create page renders | `create_page_renders` | `assertInertia` component |
+| store creates supplier + redirects to show | `store_creates_supplier_and_redirects_to_show` | `assertDatabaseHas`, `assertRedirect(route('suppliers.show', ...))` |
+| store requires name | `store_requires_name` | `assertSessionHasErrors(['name'])` |
+| store rejects invalid email | `store_rejects_invalid_email` | `assertSessionHasErrors(['email'])` |
+| store rejects invalid website URL | `store_rejects_invalid_website_url` | `assertSessionHasErrors(['website'])` |
+| show returns correct supplier | `show_returns_supplier` | `assertInertia` component + where('supplier.id', ...) |
+| edit returns correct supplier | `edit_returns_supplier` | `assertInertia` component + where('supplier.id', ...) |
+| update saves changes + redirects to show | `update_saves_changes_and_redirects_to_show` | `assertDatabaseHas`, `assertRedirect` |
+| update with invalid email returns error | `update_with_invalid_email_returns_error` | `assertSessionHasErrors(['email'])` |
+| destroy hard-deletes supplier | `destroy_hard_deletes_supplier` | `assertDatabaseMissing('suppliers', ...)` |
+| destroy nullifies supplier_id on related materials | `destroy_nullifies_supplier_id_on_related_materials` | `assertDatabaseHas('materials', ['supplier_id' => null])` |
+| PHPUnit 11 #[Test] attributes, no Pest | All 14 tests | `#[Test]` attribute on every method |
+| RefreshDatabase trait | Class level | `use RefreshDatabase` |
+| Factories for all test data | All tests | `User::factory()`, `Supplier::factory()`, `Material::factory()` |
+| setUp with private User $user | Class structure | `setUp()` method + `private User $user` |
+| assertSessionHasErrors for validation | Tests 6, 7, 8, 12 | `assertSessionHasErrors` |
+| assertDatabaseMissing for hard delete | Test 13 | `assertDatabaseMissing` (not assertSoftDeleted) |

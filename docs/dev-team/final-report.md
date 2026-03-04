@@ -1,124 +1,135 @@
-# Phase 2 Project Tracker — Final Report
+# Phase 3 Inventory & Materials — Final Report
 
 **Date:** 2026-03-03
 **Status:** COMPLETE
-**Tests:** 72 passed (281 assertions), 0 failures
+**Tests:** 102 passed (442 assertions), 0 failures
 **Build:** npm run build succeeds
 
 ---
 
 ## What Was Built
 
-### Task 01: Project CRUD Backend
-- `ProjectController` fully implemented: index (with search/filter/pagination), create, store, show, edit, update, destroy
-- Search uses Laravel Scout database driver with `search()->keys()` feeding `whereIn`
-- Filters: `?search=`, `?status=`, `?priority=` query params, paginate(15)
-- Enum options passed as `{value, label}` arrays to create/edit
+### Task 01: MaterialController CRUD
+- All 7 resource methods implemented: index (search/filter/pagination), create, store, show, edit, update, destroy
+- Search via Laravel Scout `search()->keys()` + `whereIn` pattern
+- Filters: `?search=`, `?category=`, `?supplier=` query params, `paginate(15)->withQueryString()`
+- Eager loads category + supplier on index, category + supplier + projects on show
+- Enum options (`MaterialUnit`) mapped to `{value, label}` for create/edit forms
+- Categories and suppliers passed as `{id, name}` for filter selects
 - Flash messages on all mutations
+- Destroy route added (removed `.except(['destroy'])` from routes)
 
-### Task 02: Photo Upload Backend
-- `PhotoUploadService` created in `app/Services/`
-- Intervention Image v3: `ImageManager::gd()`, `->read()`, `->scale(width: 400)`, `->toJpeg()`
-- Originals at `projects/{id}/photos/{ulid}.{ext}`, thumbnails at `projects/{id}/thumbnails/{ulid}.jpg`
-- Auto-incrementing `sort_order` per project
+### Task 02: Stock Adjustment Backend
+- `adjustStock()` method uses `AdjustStockRequest` form request
+- `Material::adjustQuantity($delta)` — encapsulated model method, floors at zero
+- `Material::scopeLowStock()` — `whereNotNull('low_stock_threshold')->whereColumn('quantity_on_hand', '<=', 'low_stock_threshold')`
+- `Material::isLowStock()` — boolean helper method
+- Descriptive flash message: "Added 5 Piece — stock now: 15"
 
-### Task 03: Time Entry Backend + Active Timer
-- `logTime()`: creates TimeEntry, auto-stops any running timer first, computes duration when ended_at provided
-- `stopTimer()`: sets ended_at=now(), computes duration_minutes
-- `TimeEntry::scopeRunning()` query scope added
-- `HandleInertiaRequests` shares `activeTimer` prop: `{ id, project_id, project_slug, project_title, started_at }`
+### Task 03: Supplier CRUD Backend
+- New `SupplierController` with all 7 resource methods
+- `StoreSupplierRequest` + `UpdateSupplierRequest` created (7 fields each, update uses `sometimes`)
+- Index: LIKE search across name, contact_name, email; `paginate(20)`
+- Show: `loadCount('materials')` for materials count display
+- Hard delete (no soft deletes per governance)
+- Routes registered at `/suppliers`
 
-### Task 04: Notes & Material Attachment
-- `addNote()`: creates ProjectNote via relationship
-- `attachMaterial()`: attach or updateExistingPivot, computes `cost_at_time = unit_cost * quantity_used`
-
-### Task 05: Project List Page + Kanban Board
-- Toggle between List view (Table) and Board view (Kanban)
-- Search input debounced 300ms, status/priority Select filters
-- All filters via `router.get` with `preserveState: true`
-- Board groups projects by status, all 7 columns always shown
-- Status/priority badges with hex colors
+### Task 04: Materials Index Page
+- Table view with 8 columns: Name (amber link), SKU, Category, Unit, In Stock, Low Stock (red Badge), Unit Cost (Intl.NumberFormat), Actions
+- 3-filter bar: debounced search, category Select, supplier Select
+- All filters via `router.get('/materials', params, { preserveState: true, replace: true })`
 - Pagination (prev/next)
+- Empty state: "No materials found."
 
-### Task 06: Create & Edit Forms
-- Both use `useForm` with all 13 project fields
-- Status/priority as Select with backend-provided options
-- Conditional commission fields (client_name, client_contact)
-- Inline validation errors, loading state on submit
-- Edit form handles deadline ISO to YYYY-MM-DD conversion
+### Task 05: Materials Create & Edit Forms
+- 4-section Card layout: Basic Info, Stock, Supplier & Location, Notes
+- 11 form fields with inline validation errors
+- `quantity_on_hand` with `step="0.01"` for fractional quantities
+- `low_stock_threshold` with helper text: "Alert when stock falls at or below this amount"
+- Categories/suppliers mapped from `{id, name}` to `{value, label}` in component
+- Edit pre-populates all fields with `?? ''` for nullable values
 
-### Task 07: Project Detail Page (fullstack)
-- Controller show() eager-loads: photos, notes, timeEntries, materials, expenses, revenues
-- Also passes all materials for the attach form
-- 7 sections: Overview, Photos, Notes, Time Log, Materials, Expenses, Revenues
-- 4 inline forms: Upload Photo (forceFormData), Add Note, Log Time, Attach Material
-- Start Timer shortcut, Stop Timer per-entry button
-- Flash messages via Alert component
-- Photo URLs correctly prefixed with `/storage/`
+### Task 06: Materials Show / Detail Page
+- 3 sections: Overview (definition list), Stock Level (with adjustment form), Project Usage (table)
+- Stock adjustment inline form: signed quantity input + notes, POSTs to `materials.adjust-stock`
+- Low stock red Badge when `quantity_on_hand <= low_stock_threshold`
+- Project usage table with pivot data (qty used, cost at time, total cost, notes)
+- Footer row: sum of total costs
+- Flash messages via `usePage().props.flash`
+- Delete with confirm dialog
 
-### Task 08: Persistent Timer Widget
-- `TimerWidget` component in AppLayout.jsx
-- Reads `activeTimer` from shared Inertia props
-- Live ticking HH:MM:SS via useEffect/setInterval
-- Amber styling + pulsing dot when running, gray when idle
-- Click navigates to active project
-- Works in both desktop and mobile nav
+### Task 07: Supplier CRUD Pages (4 new files)
+- Index: search (debounced), table (Name, Contact, Email, Phone, Actions), pagination
+- Create/Edit: 7-field form (name required, contact_name, email, phone, website, address, notes)
+- Show: detail card with mailto/href links, materials count callout, delete button (hard delete)
+- All pages wrapped in AppLayout with Head title
 
-### Task 09: CRUD Feature Tests (12 tests)
-- Auth guard, index with props, search filter, status filter
-- Create page with statuses/priorities, store + validation
-- Show with project prop, edit with options
-- Update + validation, soft-delete
+### Task 08: Material Controller Feature Tests (20 tests)
+- Auth guard, index with all 4 props, category filter, supplier filter, search
+- Create with units/categories/suppliers, store + 3 validation tests
+- Show, edit with options, update + validation, soft-delete
+- Stock adjustment: increment, decrement, floor-at-zero, validation
+- Low stock scope: model-level test with 3 material scenarios
 
-### Task 10: Sub-resource Feature Tests (10 tests)
-- Photo upload + rejection, Storage::fake
-- Time entry (completed + running + validation + stop)
-- Note creation + validation
-- Material attachment + nonexistent material validation
+### Task 09: Supplier Controller Feature Tests (14 tests)
+- Auth guard, index with props, search filter
+- Create page, store + name/email/website validation
+- Show, edit, update + validation
+- Hard-delete with `assertDatabaseMissing`
+- FK cascade nullification: verifies `supplier_id` set to null on materials when supplier deleted
 
 ---
 
 ## Supervisor Findings Resolved
 
-All 7 critical findings from the review were addressed during implementation:
+All 5 critical findings from the Phase 3 review were addressed during implementation:
 
-1. **Pagination standardized** on `paginate(15)` across all tasks
-2. **Filters prop** includes search, status, and priority consistently
-3. **Flash messages** added to all mutation redirects
-4. **Validation assertions** use `assertSessionHasErrors` (not assertStatus 422)
-5. **Photo URLs** prefixed with `/storage/` in Show.jsx
-6. **Deadline format** uses `substring(0, 10)` guard in Edit.jsx
-7. **Badge colors** consistent between Index and Show pages
+1. **Filter parameter naming** — Used `category`/`supplier` (not `category_id`/`supplier_id`) matching manifest and frontend
+2. **Data contract consistency** — Categories/suppliers passed as `{id, name}` from backend, mapped to `{value, label}` in frontend components
+3. **Task 09 scope** — Implemented only the test file; backend belongs to Task 03
+4. **Low Stock column** — Kept as separate column per manifest spec
+5. **Step values** — Used `step="0.01"` for `quantity_on_hand` per manifest
 
 ---
 
 ## File Changes Summary
 
-### New Files (3)
-- `app/Services/PhotoUploadService.php`
-- `tests/Feature/ProjectSubResourceTest.php`
-- `docs/dev-team/reviews/phase2-review.md`
+### New Files (8)
+- `app/Http/Controllers/SupplierController.php`
+- `app/Http/Requests/StoreSupplierRequest.php`
+- `app/Http/Requests/UpdateSupplierRequest.php`
+- `resources/js/Pages/Suppliers/Index.jsx`
+- `resources/js/Pages/Suppliers/Show.jsx`
+- `resources/js/Pages/Suppliers/Create.jsx`
+- `resources/js/Pages/Suppliers/Edit.jsx`
+- `tests/Feature/SupplierControllerTest.php`
 
-### Modified Files (10)
-- `app/Http/Controllers/ProjectController.php` — all 11 methods implemented
-- `app/Http/Middleware/HandleInertiaRequests.php` — activeTimer shared prop
-- `app/Models/TimeEntry.php` — scopeRunning() added
-- `resources/js/Pages/Projects/Index.jsx` — list + kanban board
-- `resources/js/Pages/Projects/Create.jsx` — full form
-- `resources/js/Pages/Projects/Edit.jsx` — full form
-- `resources/js/Pages/Projects/Show.jsx` — detail page (751 lines)
-- `resources/js/Layouts/AppLayout.jsx` — live timer widget
-- `tests/Feature/ProjectControllerTest.php` — expanded to 12 tests
-- `docs/dev-team/task-manifest.md` + plans/
+### Modified Files (7)
+- `app/Http/Controllers/MaterialController.php` — all 8 methods implemented (7 CRUD + adjustStock)
+- `app/Models/Material.php` — added scopeLowStock, isLowStock, adjustQuantity
+- `routes/web.php` — removed materials .except(['destroy']), added supplier resource routes
+- `resources/js/Pages/Materials/Index.jsx` — full table + filters + pagination
+- `resources/js/Pages/Materials/Create.jsx` — full 11-field form
+- `resources/js/Pages/Materials/Edit.jsx` — full 11-field form with pre-population
+- `resources/js/Pages/Materials/Show.jsx` — detail page with stock adjustment + project usage
+- `tests/Feature/MaterialControllerTest.php` — expanded from 4 to 20 tests
 
 ---
 
-## Ready for Phase 3: Inventory & Materials
+## Test Growth
 
-The Project Tracker is complete. Phase 3 can now build on this foundation:
-- Materials CRUD with category filtering
-- Stock adjustment with history
-- Supplier management
-- Link materials to projects with quantity tracking
-- Low stock query and alert notification
-- Cost tracking per project based on materials used
+| Phase | Tests | Assertions |
+|-------|-------|------------|
+| Phase 1 (Scaffold) | 55 | 199 |
+| Phase 2 (Projects) | 72 | 281 |
+| Phase 3 (Materials) | 102 | 442 |
+
+---
+
+## Ready for Phase 4: Tools & Equipment
+
+Phase 3 is complete. Phase 4 can build on this foundation:
+- Tools CRUD with category filtering
+- Maintenance logging and scheduling
+- Tool checkout/return tracking
+- Tool condition assessment

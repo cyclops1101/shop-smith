@@ -7,6 +7,7 @@ use App\Http\Controllers\MaterialController;
 use App\Http\Controllers\PortfolioController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\ProjectController;
+use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\ToolController;
 use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Route;
@@ -38,11 +39,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('/projects/{project}/materials', [ProjectController::class, 'attachMaterial'])->name('projects.attach-material');
     Route::post('/projects/{project}/notes', [ProjectController::class, 'addNote'])->name('projects.add-note');
 
-    // Materials (resource: index, create, store, show, edit, update — no destroy)
-    Route::resource('materials', MaterialController::class)->except(['destroy']);
+    // Materials
+    Route::resource('materials', MaterialController::class);
 
     // Material sub-resources
     Route::post('/materials/{material}/adjust', [MaterialController::class, 'adjustStock'])->name('materials.adjust-stock');
+
+    // Suppliers
+    Route::resource('suppliers', SupplierController::class);
 
     // Tools (resource: index, create, store, show, edit, update — no destroy)
     Route::resource('tools', ToolController::class)->except(['destroy']);

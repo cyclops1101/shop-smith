@@ -1,750 +1,490 @@
-# Task 06 Plan: Project Create and Edit Forms
+# Task 06 Plan: Materials Show / Detail Page
 
-**Task ID:** 06
+**Task ID:** TASK-06
 **Domain:** frontend
-**Files:** `resources/js/Pages/Projects/Create.jsx`, `resources/js/Pages/Projects/Edit.jsx`
+**File:** `resources/js/Pages/Materials/Show.jsx`
 
 ---
 
 ## 1. Approach
 
-Replace the two stub pages with full working forms using Inertia's `useForm`. Both forms share the same field set and layout — the only differences are the initial data source, the HTTP method, and the target route. The shared structure is factored into a `ProjectForm` component defined locally (in the same file as Create, then imported by Edit, or co-located) to eliminate duplication.
+Replace the 16-line stub in `resources/js/Pages/Materials/Show.jsx` with a full detail page, modelled closely on `resources/js/Pages/Projects/Show.jsx`. The page is structured into three Card sections: Overview, Stock Level (with inline adjustment form), and Project Usage (table with footer total). Sub-sections with a form use the same local-function pattern already established in Projects/Show.jsx (`PhotosSection`, `NotesSection`, `TimeLogSection`, `MaterialsSection`).
 
-Each field maps directly to a database column or model attribute. Validation errors come from Inertia's session flash (set by the Form Request on the backend) and are accessed via `form.errors`. The `is_commission` checkbox conditionally reveals the `client_name` and `client_contact` fields.
+The implementation is a single-file full replacement. No new files or shared components need to be created. All UI primitives already exist under `resources/js/Components/ui/`.
 
 ---
 
-## 2. Files to Create/Modify
+## 2. Files to Modify
 
 | Action | Path |
 |--------|------|
-| Modify | `resources/js/Pages/Projects/Create.jsx` |
-| Modify | `resources/js/Pages/Projects/Edit.jsx` |
+| Full replacement | `resources/js/Pages/Materials/Show.jsx` |
 
-No new files need to be created. The shared form markup will be extracted into a local component defined within `Create.jsx` and imported into `Edit.jsx`, or duplicated across both files (the simpler path given the task scope — see Decision 3 below).
-
----
-
-## 3. Form Fields
-
-The following fields are required by the acceptance criteria. Each entry shows the field name, the input type, the UI primitive to use, and where validation errors come from.
-
-| Field | Type | UI Primitive | Notes |
-|-------|------|-------------|-------|
-| `title` | text | `Input` | Required |
-| `description` | textarea | `Textarea` | Optional |
-| `status` | select | `Select` | Options from `statuses` prop |
-| `priority` | select | `Select` | Options from `priorities` prop |
-| `estimated_hours` | number | `Input` | Optional, step 0.5 |
-| `estimated_cost` | number (decimal) | `Input` | Optional, step 0.01 |
-| `sell_price` | number (decimal) | `Input` | Optional, step 0.01 |
-| `deadline` | date | native `<input type="date">` | Optional |
-| `is_commission` | checkbox | native `<input type="checkbox">` | Toggles client fields |
-| `client_name` | text | `Input` | Shown only when `is_commission` is true |
-| `client_contact` | text | `Input` | Shown only when `is_commission` is true |
-| `notes` | textarea | `Textarea` | Optional |
+No other files are touched by this task.
 
 ---
 
-## 4. Key Decisions
+## 3. Component Structure
 
-### Decision 1: `useForm` initial data shape
+The exported default component `MaterialShow` receives `{ material }` and calls `usePage()` for flash. Three Card sections and the page header are rendered inline (not extracted as separate named functions) because none of them require independent `useForm` instances that would cause hook-rule violations. The stock adjustment form is the only form on the page and is defined directly in the component body.
 
-For **Create.jsx**, the form initializes with empty/default values:
-
-```js
-const form = useForm({
-    title: '',
-    description: '',
-    status: statuses[0]?.value ?? '',
-    priority: priorities[0]?.value ?? '',
-    estimated_hours: '',
-    estimated_cost: '',
-    sell_price: '',
-    deadline: '',
-    is_commission: false,
-    client_name: '',
-    client_contact: '',
-    notes: '',
-});
 ```
+MaterialShow({ material })
+  usePage().props.flash
+  useForm({ quantity: '', notes: '' })        ← adjust stock form
 
-`status` and `priority` default to the first option from the prop array so the server always receives a valid enum value. If the `statuses` or `priorities` arrays are empty (defensive case), the empty string is used.
-
-For **Edit.jsx**, the form pre-populates from the `project` prop:
-
-```js
-const form = useForm({
-    title: project.title ?? '',
-    description: project.description ?? '',
-    status: project.status ?? '',
-    priority: project.priority ?? '',
-    estimated_hours: project.estimated_hours ?? '',
-    estimated_cost: project.estimated_cost ?? '',
-    sell_price: project.sell_price ?? '',
-    deadline: project.deadline ?? '',
-    is_commission: project.is_commission ?? false,
-    client_name: project.client_name ?? '',
-    client_contact: project.client_contact ?? '',
-    notes: project.notes ?? '',
-});
+  <AppLayout>
+    <Head title={material.name} />
+    flash alerts (success + error)
+    page header: h1, Edit Link, Delete Button
+    <Card> Section 1: Overview
+    <Card> Section 2: Stock Level + Adjust Form
+    <Card> Section 3: Project Usage Table
 ```
-
-`?? ''` guards against `null` values coming from the database, which would cause React controlled-input warnings.
-
-### Decision 2: Submit handlers
-
-**Create.jsx** submits via POST:
-
-```js
-const handleSubmit = (e) => {
-    e.preventDefault();
-    form.post(route('projects.store'));
-};
-```
-
-**Edit.jsx** submits via PATCH:
-
-```js
-const handleSubmit = (e) => {
-    e.preventDefault();
-    form.patch(route('projects.update', project.slug));
-};
-```
-
-No `preserveState` or `preserveScroll` options are needed for these forms. On success, the backend redirects to `projects.show` (or `projects.index`), so Inertia will navigate away automatically.
-
-### Decision 3: Code duplication vs. shared component
-
-The cleanest approach is a shared `ProjectFormFields` component. However, introducing a new file (e.g., `resources/js/Pages/Projects/ProjectFormFields.jsx` or `resources/js/Components/ProjectFormFields.jsx`) is extra scope for this task. Instead, each page file is self-contained and the form markup is written out in full in each file. This is acceptable because:
-
-- The two files are always edited together as a pair.
-- The total markup is approximately 150 lines per file — manageable duplication.
-- No shared component directory structure decision needs to be made.
-
-If a future refactor task wants to extract a shared component, it can do so cleanly.
-
-### Decision 4: `Select` component expects `options` as `{ value, label }[]`
-
-The `Select` component in `Components/ui/Select.jsx` renders:
-
-```jsx
-{options.map(({ value, label }) => (
-    <option key={value} value={value}>{label}</option>
-))}
-```
-
-The `statuses` and `priorities` props must therefore be arrays of `{ value, label }` objects. The backend (Task 01 / ProjectController) passes these from PHP Enums like this:
-
-```php
-'statuses' => collect(ProjectStatus::cases())
-    ->map(fn($case) => ['value' => $case->value, 'label' => $case->label()])
-    ->values(),
-```
-
-The frontend form binds `onChange` to `form.setData('status', e.target.value)` and `value={form.data.status}`.
-
-### Decision 5: Checkbox handling
-
-React checkbox inputs need `checked` (not `value`) and fire `onChange` with `e.target.checked`:
-
-```jsx
-<input
-    type="checkbox"
-    id="is_commission"
-    checked={form.data.is_commission}
-    onChange={(e) => form.setData('is_commission', e.target.checked)}
-/>
-```
-
-The conditional reveal of client fields uses:
-
-```jsx
-{form.data.is_commission && (
-    <>
-        {/* client_name field */}
-        {/* client_contact field */}
-    </>
-)}
-```
-
-When `is_commission` is unchecked, `client_name` and `client_contact` are unmounted, but their values remain in `form.data`. This is intentional — if the user accidentally unchecks, they can re-check and their data is still there. The server-side Form Request validates `client_name` as `required_if:is_commission,true`, so submitting with `is_commission: false` and non-empty client fields is harmless.
-
-### Decision 6: Date input format
-
-The `deadline` field uses a native `<input type="date">`. The HTML date input requires the `value` attribute to be in `YYYY-MM-DD` format. The backend stores `deadline` as a date column and returns it pre-formatted (e.g., `"2025-12-31"`) via Eloquent's date casting. No JavaScript date formatting is needed.
-
-```jsx
-<input
-    type="date"
-    id="deadline"
-    value={form.data.deadline}
-    onChange={(e) => form.setData('deadline', e.target.value)}
-    className="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm ..."
-/>
-```
-
-The `Input` component can also be used here by passing `type="date"` since it accepts `...props`.
-
-### Decision 7: Error display
-
-Inertia populates `form.errors` with field-keyed error messages after a failed form submission. Each field is followed by an error span:
-
-```jsx
-{form.errors.title && (
-    <p className="mt-1 text-sm text-red-600">{form.errors.title}</p>
-)}
-```
-
-The `Input`, `Select`, and `Textarea` components accept an `error` boolean prop that switches their border to red:
-
-```jsx
-<Input
-    id="title"
-    type="text"
-    value={form.data.title}
-    onChange={(e) => form.setData('title', e.target.value)}
-    error={!!form.errors.title}
-/>
-```
-
-### Decision 8: Submit button state
-
-The `Button` component accepts `loading` and `disabled` props. Wire both to `form.processing`:
-
-```jsx
-<Button
-    type="submit"
-    loading={form.processing}
-    disabled={form.processing}
->
-    {form.processing ? 'Saving...' : 'Save Project'}
-</Button>
-```
-
-### Decision 9: Cancel link
-
-The cancel link uses Inertia's `Link` component for a consistent SPA navigation:
-
-```jsx
-import { Link, useForm } from '@inertiajs/react';
-
-<Link href={route('projects.index')} className="...">
-    Cancel
-</Link>
-```
-
-Styled as a secondary/ghost button using Tailwind utility classes directly (not the `Button` component, since it renders a `<button>` not an `<a>` tag), or using `Button` with `as={Link}` if it supports that. Since the `Button` component does not support an `as` prop, the cancel link is a plain `<a>` or Inertia `Link` with manual styling matching the `secondary` button variant:
-
-```jsx
-<Link
-    href={route('projects.index')}
-    className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
->
-    Cancel
-</Link>
-```
-
-### Decision 10: Layout and Card structure
-
-The form is wrapped in a single `Card` with a `CardHeader` and `CardContent`. Fields are grouped into logical sections separated by headings:
-
-1. **Basic Info** — title, description, status, priority
-2. **Pricing & Time** — estimated_hours, estimated_cost, sell_price, deadline
-3. **Commission** — is_commission checkbox, conditionally client_name + client_contact
-4. **Notes** — notes textarea
-
-The footer (`CardFooter`) holds the Cancel link and Save button.
 
 ---
 
-## 5. Complete Implementation: Create.jsx
+## 4. Import List
 
 ```jsx
 import AppLayout from '@/Layouts/AppLayout';
-import { Head, Link, useForm } from '@inertiajs/react';
+import { Head, Link, useForm, router, usePage } from '@inertiajs/react';
+import Alert from '@/Components/ui/Alert';
+import Badge from '@/Components/ui/Badge';
 import Button from '@/Components/ui/Button';
+import { Card, CardHeader, CardTitle, CardContent } from '@/Components/ui/Card';
 import Input from '@/Components/ui/Input';
 import Label from '@/Components/ui/Label';
-import Select from '@/Components/ui/Select';
-import Textarea from '@/Components/ui/Textarea';
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/Components/ui/Card';
-
-export default function ProjectCreate({ statuses, priorities }) {
-    const form = useForm({
-        title: '',
-        description: '',
-        status: statuses[0]?.value ?? '',
-        priority: priorities[0]?.value ?? '',
-        estimated_hours: '',
-        estimated_cost: '',
-        sell_price: '',
-        deadline: '',
-        is_commission: false,
-        client_name: '',
-        client_contact: '',
-        notes: '',
-    });
-
-    const handleSubmit = (e) => {
-        e.preventDefault();
-        form.post(route('projects.store'));
-    };
-
-    return (
-        <AppLayout>
-            <Head title="New Project" />
-            <div className="py-12">
-                <div className="mx-auto max-w-3xl sm:px-6 lg:px-8">
-                    <h1 className="mb-6 text-2xl font-semibold text-gray-900">New Project</h1>
-
-                    <form onSubmit={handleSubmit}>
-                        <Card>
-                            <CardHeader>
-                                <CardTitle>Basic Info</CardTitle>
-                            </CardHeader>
-                            <CardContent className="space-y-4">
-
-                                {/* Title */}
-                                <div>
-                                    <Label htmlFor="title">Title <span className="text-red-500">*</span></Label>
-                                    <Input
-                                        id="title"
-                                        type="text"
-                                        className="mt-1"
-                                        value={form.data.title}
-                                        onChange={(e) => form.setData('title', e.target.value)}
-                                        error={!!form.errors.title}
-                                        autoFocus
-                                    />
-                                    {form.errors.title && (
-                                        <p className="mt-1 text-sm text-red-600">{form.errors.title}</p>
-                                    )}
-                                </div>
-
-                                {/* Description */}
-                                <div>
-                                    <Label htmlFor="description">Description</Label>
-                                    <Textarea
-                                        id="description"
-                                        className="mt-1"
-                                        rows={3}
-                                        value={form.data.description}
-                                        onChange={(e) => form.setData('description', e.target.value)}
-                                        error={!!form.errors.description}
-                                    />
-                                    {form.errors.description && (
-                                        <p className="mt-1 text-sm text-red-600">{form.errors.description}</p>
-                                    )}
-                                </div>
-
-                                {/* Status + Priority */}
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <Label htmlFor="status">Status</Label>
-                                        <Select
-                                            id="status"
-                                            className="mt-1"
-                                            options={statuses}
-                                            value={form.data.status}
-                                            onChange={(e) => form.setData('status', e.target.value)}
-                                            error={!!form.errors.status}
-                                        />
-                                        {form.errors.status && (
-                                            <p className="mt-1 text-sm text-red-600">{form.errors.status}</p>
-                                        )}
-                                    </div>
-                                    <div>
-                                        <Label htmlFor="priority">Priority</Label>
-                                        <Select
-                                            id="priority"
-                                            className="mt-1"
-                                            options={priorities}
-                                            value={form.data.priority}
-                                            onChange={(e) => form.setData('priority', e.target.value)}
-                                            error={!!form.errors.priority}
-                                        />
-                                        {form.errors.priority && (
-                                            <p className="mt-1 text-sm text-red-600">{form.errors.priority}</p>
-                                        )}
-                                    </div>
-                                </div>
-                            </CardContent>
-
-                            {/* Pricing & Time */}
-                            <CardHeader>
-                                <CardTitle>Pricing &amp; Time</CardTitle>
-                            </CardHeader>
-                            <CardContent className="space-y-4">
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <Label htmlFor="estimated_hours">Estimated Hours</Label>
-                                        <Input
-                                            id="estimated_hours"
-                                            type="number"
-                                            className="mt-1"
-                                            min="0"
-                                            step="0.5"
-                                            value={form.data.estimated_hours}
-                                            onChange={(e) => form.setData('estimated_hours', e.target.value)}
-                                            error={!!form.errors.estimated_hours}
-                                        />
-                                        {form.errors.estimated_hours && (
-                                            <p className="mt-1 text-sm text-red-600">{form.errors.estimated_hours}</p>
-                                        )}
-                                    </div>
-                                    <div>
-                                        <Label htmlFor="deadline">Deadline</Label>
-                                        <Input
-                                            id="deadline"
-                                            type="date"
-                                            className="mt-1"
-                                            value={form.data.deadline}
-                                            onChange={(e) => form.setData('deadline', e.target.value)}
-                                            error={!!form.errors.deadline}
-                                        />
-                                        {form.errors.deadline && (
-                                            <p className="mt-1 text-sm text-red-600">{form.errors.deadline}</p>
-                                        )}
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <Label htmlFor="estimated_cost">Estimated Cost ($)</Label>
-                                        <Input
-                                            id="estimated_cost"
-                                            type="number"
-                                            className="mt-1"
-                                            min="0"
-                                            step="0.01"
-                                            value={form.data.estimated_cost}
-                                            onChange={(e) => form.setData('estimated_cost', e.target.value)}
-                                            error={!!form.errors.estimated_cost}
-                                        />
-                                        {form.errors.estimated_cost && (
-                                            <p className="mt-1 text-sm text-red-600">{form.errors.estimated_cost}</p>
-                                        )}
-                                    </div>
-                                    <div>
-                                        <Label htmlFor="sell_price">Sell Price ($)</Label>
-                                        <Input
-                                            id="sell_price"
-                                            type="number"
-                                            className="mt-1"
-                                            min="0"
-                                            step="0.01"
-                                            value={form.data.sell_price}
-                                            onChange={(e) => form.setData('sell_price', e.target.value)}
-                                            error={!!form.errors.sell_price}
-                                        />
-                                        {form.errors.sell_price && (
-                                            <p className="mt-1 text-sm text-red-600">{form.errors.sell_price}</p>
-                                        )}
-                                    </div>
-                                </div>
-                            </CardContent>
-
-                            {/* Commission */}
-                            <CardHeader>
-                                <CardTitle>Commission</CardTitle>
-                            </CardHeader>
-                            <CardContent className="space-y-4">
-                                <div className="flex items-center gap-3">
-                                    <input
-                                        id="is_commission"
-                                        type="checkbox"
-                                        className="h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500"
-                                        checked={form.data.is_commission}
-                                        onChange={(e) => form.setData('is_commission', e.target.checked)}
-                                    />
-                                    <Label htmlFor="is_commission" className="mb-0">
-                                        This is a commission (client) project
-                                    </Label>
-                                </div>
-
-                                {form.data.is_commission && (
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <Label htmlFor="client_name">Client Name</Label>
-                                            <Input
-                                                id="client_name"
-                                                type="text"
-                                                className="mt-1"
-                                                value={form.data.client_name}
-                                                onChange={(e) => form.setData('client_name', e.target.value)}
-                                                error={!!form.errors.client_name}
-                                            />
-                                            {form.errors.client_name && (
-                                                <p className="mt-1 text-sm text-red-600">{form.errors.client_name}</p>
-                                            )}
-                                        </div>
-                                        <div>
-                                            <Label htmlFor="client_contact">Client Contact</Label>
-                                            <Input
-                                                id="client_contact"
-                                                type="text"
-                                                className="mt-1"
-                                                placeholder="Email or phone"
-                                                value={form.data.client_contact}
-                                                onChange={(e) => form.setData('client_contact', e.target.value)}
-                                                error={!!form.errors.client_contact}
-                                            />
-                                            {form.errors.client_contact && (
-                                                <p className="mt-1 text-sm text-red-600">{form.errors.client_contact}</p>
-                                            )}
-                                        </div>
-                                    </div>
-                                )}
-                            </CardContent>
-
-                            {/* Notes */}
-                            <CardHeader>
-                                <CardTitle>Notes</CardTitle>
-                            </CardHeader>
-                            <CardContent>
-                                <Textarea
-                                    id="notes"
-                                    rows={4}
-                                    placeholder="Internal notes, reminders, design ideas..."
-                                    value={form.data.notes}
-                                    onChange={(e) => form.setData('notes', e.target.value)}
-                                    error={!!form.errors.notes}
-                                />
-                                {form.errors.notes && (
-                                    <p className="mt-1 text-sm text-red-600">{form.errors.notes}</p>
-                                )}
-                            </CardContent>
-
-                            <CardFooter className="flex justify-end gap-3">
-                                <Link
-                                    href={route('projects.index')}
-                                    className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                                >
-                                    Cancel
-                                </Link>
-                                <Button
-                                    type="submit"
-                                    loading={form.processing}
-                                    disabled={form.processing}
-                                >
-                                    {form.processing ? 'Saving...' : 'Create Project'}
-                                </Button>
-                            </CardFooter>
-                        </Card>
-                    </form>
-                </div>
-            </div>
-        </AppLayout>
-    );
-}
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/Components/ui/Table';
 ```
+
+`Select`, `Textarea`, and `Modal` are not needed for this page.
 
 ---
 
-## 6. Complete Implementation: Edit.jsx
+## 5. Decisions and Rationale
 
-Edit.jsx is identical in structure. Only three things differ:
+### Decision 1: Single-file, no sub-components
 
-1. The `useForm` initial values come from `project.*` instead of empty strings.
-2. The `handleSubmit` calls `form.patch(route('projects.update', project.slug))`.
-3. The page title and heading say "Edit Project" and the submit button label is "Save Changes".
+The stock adjustment form is the only stateful element. Extracting it into a named sub-function would be valid but adds no benefit at this size. Keeping everything inline in `MaterialShow` is consistent with the simplest pages in the codebase and easier for reviewers to follow.
+
+### Decision 2: `useForm` placement at top level of `MaterialShow`
+
+`useForm` must be called unconditionally at the top level of the component (React hooks rule). There is exactly one form on this page, so one `useForm` call at the top is correct. The `handleAdjust` function references `adjustForm` and is defined directly below.
 
 ```jsx
-import AppLayout from '@/Layouts/AppLayout';
-import { Head, Link, useForm } from '@inertiajs/react';
-import Button from '@/Components/ui/Button';
-import Input from '@/Components/ui/Input';
-import Label from '@/Components/ui/Label';
-import Select from '@/Components/ui/Select';
-import Textarea from '@/Components/ui/Textarea';
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/Components/ui/Card';
+const adjustForm = useForm({ quantity: '', notes: '' });
 
-export default function ProjectEdit({ project, statuses, priorities }) {
-    const form = useForm({
-        title: project.title ?? '',
-        description: project.description ?? '',
-        status: project.status ?? '',
-        priority: project.priority ?? '',
-        estimated_hours: project.estimated_hours ?? '',
-        estimated_cost: project.estimated_cost ?? '',
-        sell_price: project.sell_price ?? '',
-        deadline: project.deadline ?? '',
-        is_commission: project.is_commission ?? false,
-        client_name: project.client_name ?? '',
-        client_contact: project.client_contact ?? '',
-        notes: project.notes ?? '',
+function handleAdjust(e) {
+    e.preventDefault();
+    adjustForm.post(route('materials.adjust-stock', material.id), {
+        onSuccess: () => adjustForm.reset(),
     });
+}
+```
 
-    const handleSubmit = (e) => {
-        e.preventDefault();
-        form.patch(route('projects.update', project.slug));
-    };
+`onSuccess: () => adjustForm.reset()` clears the form after the server redirects back to this page via Inertia's visit cycle.
 
-    return (
-        <AppLayout>
-            <Head title={`Edit: ${project.title}`} />
-            <div className="py-12">
-                <div className="mx-auto max-w-3xl sm:px-6 lg:px-8">
-                    <h1 className="mb-6 text-2xl font-semibold text-gray-900">
-                        Edit Project
-                    </h1>
+### Decision 3: Delete confirmation with `window.confirm`
 
-                    <form onSubmit={handleSubmit}>
-                        {/* Identical Card structure as Create.jsx,
-                            with form.data.* pre-populated from project.* */}
-                        ...
+Follows the exact pattern in `Projects/Show.jsx`:
 
-                        <CardFooter className="flex justify-end gap-3">
-                            <Link
-                                href={route('projects.show', project.slug)}
-                                className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                            >
-                                Cancel
-                            </Link>
-                            <Button
-                                type="submit"
-                                loading={form.processing}
-                                disabled={form.processing}
-                            >
-                                {form.processing ? 'Saving...' : 'Save Changes'}
-                            </Button>
-                        </CardFooter>
-                    </form>
-                </div>
+```jsx
+function handleDelete() {
+    if (confirm('Delete this material? This cannot be undone.')) {
+        router.delete(route('materials.destroy', material.id));
+    }
+}
+```
+
+The server-side controller performs a soft delete and redirects to `materials.index`. No client-side navigation code is needed.
+
+### Decision 4: Route parameter is `material.id` (ULID), not a slug
+
+Materials use ULID route model binding (`materials/{material}`), not slug-based binding. All `route()` calls in this page pass `material.id`:
+
+- `route('materials.edit', material.id)`
+- `route('materials.destroy', material.id)`
+- `route('materials.adjust-stock', material.id)`
+
+This is confirmed by the route listing: `GET|HEAD materials/{material}`, `PUT|PATCH materials/{material}`, `POST materials/{material}/adjust`.
+
+### Decision 5: `unit` is the raw enum string from the backend
+
+The `material.unit` prop is the raw string value from the `MaterialUnit` enum (e.g., `'board_foot'`, `'linear_foot'`). The backend eager-loads the relationship but does not transform the enum to a label string. The frontend displays `material.unit` as-is in the Overview card and Stock Level card. If a human-readable label is desired, that is a future enhancement; the task spec does not call for enum-to-label transformation on this page.
+
+### Decision 6: Low stock badge condition
+
+```jsx
+{material.low_stock_threshold != null &&
+ material.quantity_on_hand <= material.low_stock_threshold && (
+    <Badge color="#dc2626">Low Stock</Badge>
+)}
+```
+
+`color="#dc2626"` is Tailwind's `red-600` as a hex value — the same technique used in `Projects/Show.jsx` for status badges. This applies a red background with white text via the Badge component's inline style path.
+
+### Decision 7: `formatCurrency` helper defined locally
+
+The same `formatCurrency` function from `Projects/Show.jsx` is copied into this file:
+
+```jsx
+function formatCurrency(amount) {
+    if (amount == null) return '—';
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
+}
+```
+
+No shared utility module exists in the codebase yet, so local definition is the correct approach.
+
+### Decision 8: Total Cost calculation in project usage table
+
+For each project row: `total = pivot.quantity_used * pivot.cost_at_time`. If either is null, display `—`. The footer sums only rows where both values are non-null:
+
+```jsx
+const totalCost = (material.projects ?? []).reduce((sum, p) => {
+    const qty = p.pivot?.quantity_used;
+    const cost = p.pivot?.cost_at_time;
+    return qty != null && cost != null ? sum + qty * cost : sum;
+}, 0);
+```
+
+The footer row is only rendered when `material.projects.length > 0`.
+
+### Decision 9: Project link uses slug, not id
+
+Each project in the `projects` array includes a `slug` field. The link follows the same pattern as `Projects/Index.jsx` — use the slug in the URL path, not the ULID:
+
+```jsx
+<Link href={'/projects/' + project.slug} className="text-amber-600 hover:underline">
+    {project.title}
+</Link>
+```
+
+### Decision 10: Flash messages — only `success` and `error`
+
+The task spec specifies `flash?.success` and `flash?.error`. The `warning` and `info` variants are shown in `Projects/Show.jsx` but the Materials Show spec does not call for them. Implementing all four is consistent and adds no risk — the plan includes all four variants for defensive completeness and consistency with the rest of the codebase.
+
+### Decision 11: Overview card definition list layout
+
+Uses the same `<dl>` + `<dt>` + `<dd>` pattern as `Projects/Show.jsx`, with a two-column grid. `description` and `notes` span full width via `sm:col-span-2`. Null values render as `—`.
+
+Supplier sub-fields (`email`, `phone`, `website`) are not shown individually in the Overview card — only the supplier `name` is shown (as specified: "Supplier name or —"). The supplier detail page handles the full contact information.
+
+---
+
+## 6. Detailed UI Markup Plan
+
+### Page wrapper
+
+```jsx
+<AppLayout>
+    <Head title={material.name} />
+    <div className="py-8">
+        <div className="mx-auto max-w-7xl space-y-6 px-4 sm:px-6 lg:px-8">
+            {/* flash, header, sections */}
+        </div>
+    </div>
+</AppLayout>
+```
+
+### Flash messages
+
+```jsx
+{flash?.success && <Alert variant="success">{flash.success}</Alert>}
+{flash?.error && <Alert variant="error">{flash.error}</Alert>}
+{flash?.warning && <Alert variant="warning">{flash.warning}</Alert>}
+{flash?.info && <Alert variant="info">{flash.info}</Alert>}
+```
+
+### Page header
+
+```jsx
+<div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <h1 className="text-2xl font-bold text-gray-900">{material.name}</h1>
+    <div className="flex shrink-0 items-center gap-2">
+        <Link href={route('materials.edit', material.id)}>
+            <Button variant="outline" size="sm">Edit</Button>
+        </Link>
+        <Button variant="destructive" size="sm" onClick={handleDelete}>
+            Delete
+        </Button>
+    </div>
+</div>
+```
+
+### Section 1: Overview Card
+
+Definition list items (left column): Name, SKU, Category, Supplier, Unit, Location.
+Full-width rows: Description, Notes.
+
+```jsx
+<Card>
+    <CardHeader><CardTitle>Overview</CardTitle></CardHeader>
+    <CardContent>
+        <dl className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">
+            <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">Name</dt>
+                <dd className="mt-1 text-sm text-gray-800">{material.name}</dd>
             </div>
-        </AppLayout>
-    );
-}
+            <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">SKU</dt>
+                <dd className="mt-1 text-sm text-gray-800">{material.sku || '—'}</dd>
+            </div>
+            <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">Category</dt>
+                <dd className="mt-1 text-sm text-gray-800">{material.category?.name || '—'}</dd>
+            </div>
+            <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">Supplier</dt>
+                <dd className="mt-1 text-sm text-gray-800">{material.supplier?.name || '—'}</dd>
+            </div>
+            <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">Unit</dt>
+                <dd className="mt-1 text-sm text-gray-800">{material.unit || '—'}</dd>
+            </div>
+            <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">Location</dt>
+                <dd className="mt-1 text-sm text-gray-800">{material.location || '—'}</dd>
+            </div>
+            <div className="sm:col-span-2">
+                <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">Description</dt>
+                <dd className="mt-1 whitespace-pre-wrap text-sm text-gray-800">{material.description || '—'}</dd>
+            </div>
+            <div className="sm:col-span-2">
+                <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">Notes</dt>
+                <dd className="mt-1 whitespace-pre-wrap text-sm text-gray-800">{material.notes || '—'}</dd>
+            </div>
+        </dl>
+    </CardContent>
+</Card>
 ```
 
-Note for Edit.jsx: The Cancel link points to `route('projects.show', project.slug)` (the project detail page), not `projects.index`, since the user navigated from the show page.
+### Section 2: Stock Level Card
+
+Top block: large quantity display + low stock badge + unit cost line + threshold line.
+Below: horizontal separator + stock adjustment form.
+
+```jsx
+<Card>
+    <CardHeader><CardTitle>Stock Level</CardTitle></CardHeader>
+    <CardContent>
+        {/* Current stock display */}
+        <div className="mb-6 flex flex-wrap items-end gap-4">
+            <div>
+                <span className="text-4xl font-bold text-gray-900">
+                    {material.quantity_on_hand}
+                </span>
+                <span className="ml-2 text-lg text-gray-500">{material.unit}</span>
+            </div>
+            {material.low_stock_threshold != null &&
+             material.quantity_on_hand <= material.low_stock_threshold && (
+                <Badge color="#dc2626">Low Stock</Badge>
+            )}
+        </div>
+
+        <dl className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">Unit Cost</dt>
+                <dd className="mt-1 text-sm text-gray-800">
+                    {material.unit_cost != null
+                        ? `${formatCurrency(material.unit_cost)} per ${material.unit}`
+                        : '—'}
+                </dd>
+            </div>
+            <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">Low Stock Threshold</dt>
+                <dd className="mt-1 text-sm text-gray-800">
+                    {material.low_stock_threshold != null
+                        ? `${material.low_stock_threshold} ${material.unit}`
+                        : 'No threshold set'}
+                </dd>
+            </div>
+        </dl>
+
+        {/* Stock adjustment form */}
+        <div className="border-t border-gray-200 pt-6">
+            <p className="mb-3 text-sm font-medium text-gray-700">Adjust Stock</p>
+            <form onSubmit={handleAdjust} className="space-y-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                        <Label htmlFor="adjust-quantity">Quantity</Label>
+                        <Input
+                            id="adjust-quantity"
+                            type="number"
+                            step="0.01"
+                            placeholder="+10 or -5"
+                            value={adjustForm.data.quantity}
+                            error={!!adjustForm.errors.quantity}
+                            onChange={(e) => adjustForm.setData('quantity', e.target.value)}
+                            className="mt-1"
+                        />
+                        {adjustForm.errors.quantity && (
+                            <p className="mt-1 text-xs text-red-600">{adjustForm.errors.quantity}</p>
+                        )}
+                    </div>
+                    <div>
+                        <Label htmlFor="adjust-notes">Notes (optional)</Label>
+                        <Input
+                            id="adjust-notes"
+                            type="text"
+                            placeholder="Reason for adjustment"
+                            value={adjustForm.data.notes}
+                            error={!!adjustForm.errors.notes}
+                            onChange={(e) => adjustForm.setData('notes', e.target.value)}
+                            className="mt-1"
+                        />
+                        {adjustForm.errors.notes && (
+                            <p className="mt-1 text-xs text-red-600">{adjustForm.errors.notes}</p>
+                        )}
+                    </div>
+                </div>
+                <Button type="submit" loading={adjustForm.processing} size="sm">
+                    Adjust Stock
+                </Button>
+            </form>
+        </div>
+    </CardContent>
+</Card>
+```
+
+### Section 3: Project Usage Card
+
+```jsx
+<Card>
+    <CardHeader><CardTitle>Project Usage</CardTitle></CardHeader>
+    <CardContent>
+        {(material.projects ?? []).length > 0 ? (
+            <div className="overflow-hidden rounded-md border border-gray-200">
+                <Table>
+                    <TableHeader>
+                        <TableRow>
+                            <TableHead>Project</TableHead>
+                            <TableHead>Qty Used</TableHead>
+                            <TableHead>Unit</TableHead>
+                            <TableHead>Cost at Time</TableHead>
+                            <TableHead>Total Cost</TableHead>
+                            <TableHead>Notes</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {material.projects.map((project) => {
+                            const qty  = project.pivot?.quantity_used;
+                            const cost = project.pivot?.cost_at_time;
+                            const total = qty != null && cost != null ? qty * cost : null;
+                            return (
+                                <TableRow key={project.id}>
+                                    <TableCell className="font-medium">
+                                        <Link
+                                            href={'/projects/' + project.slug}
+                                            className="text-amber-600 hover:underline"
+                                        >
+                                            {project.title}
+                                        </Link>
+                                    </TableCell>
+                                    <TableCell>{qty ?? '—'}</TableCell>
+                                    <TableCell>{material.unit}</TableCell>
+                                    <TableCell>{formatCurrency(cost)}</TableCell>
+                                    <TableCell>{formatCurrency(total)}</TableCell>
+                                    <TableCell>{project.pivot?.notes || '—'}</TableCell>
+                                </TableRow>
+                            );
+                        })}
+                        <TableRow className="bg-gray-50 font-medium">
+                            <TableCell colSpan={4} className="text-right text-gray-700">
+                                Total Material Cost
+                            </TableCell>
+                            <TableCell className="font-semibold text-gray-900">
+                                {formatCurrency(totalCost)}
+                            </TableCell>
+                            <TableCell />
+                        </TableRow>
+                    </TableBody>
+                </Table>
+            </div>
+        ) : (
+            <p className="text-sm text-gray-500">
+                This material has not been used in any projects yet.
+            </p>
+        )}
+    </CardContent>
+</Card>
+```
 
 ---
 
-## 7. Prop Shape Contract (Backend Expectation)
+## 7. Verified Dependencies
 
-The frontend expects these exact prop shapes from the controller. Task implementors for the backend side must confirm the controller passes these.
-
-### Create: `{ statuses, priorities }`
-
-```js
-statuses = [
-    { value: 'idea', label: 'Idea' },
-    { value: 'planned', label: 'Planned' },
-    { value: 'in_progress', label: 'In Progress' },
-    { value: 'on_hold', label: 'On Hold' },
-    { value: 'complete', label: 'Complete' },
-    { value: 'cancelled', label: 'Cancelled' },
-]
-
-priorities = [
-    { value: 'low', label: 'Low' },
-    { value: 'medium', label: 'Medium' },
-    { value: 'high', label: 'High' },
-]
-```
-
-### Edit: `{ project, statuses, priorities }`
-
-```js
-project = {
-    id: 'ulid...',
-    slug: 'my-project-slug',
-    title: 'My Project',
-    description: 'Optional description text',
-    status: 'in_progress',
-    priority: 'medium',
-    estimated_hours: '10.5',
-    estimated_cost: '250.00',
-    sell_price: '500.00',
-    deadline: '2025-12-31',    // YYYY-MM-DD string
-    is_commission: true,
-    client_name: 'Jane Doe',
-    client_contact: 'jane@example.com',
-    notes: 'Internal notes',
-}
-```
-
-Numeric fields (`estimated_hours`, `estimated_cost`, `sell_price`) should be returned as strings or numbers — both work with `value` in a controlled input. If they are returned as PHP `null`, the `?? ''` guard in `useForm` handles it.
-
-`deadline` must be a `YYYY-MM-DD` string (not a JavaScript Date object or a formatted string like "December 31, 2025"). The Eloquent model should cast `deadline` to `'date:Y-m-d'` or the controller should serialize it with `->format('Y-m-d')`.
+| Dependency | Where Defined | Status |
+|------------|---------------|--------|
+| `AppLayout` | `resources/js/Layouts/AppLayout.jsx` | Exists |
+| `Head`, `Link`, `useForm`, `router`, `usePage` from `@inertiajs/react` | npm package | Available (used in Projects/Show.jsx) |
+| `Alert` from `@/Components/ui/Alert` | `resources/js/Components/ui/Alert.jsx` | Exists; variants: `success`, `error`, `warning`, `info` |
+| `Badge` from `@/Components/ui/Badge` | `resources/js/Components/ui/Badge.jsx` | Exists; accepts `color` hex prop |
+| `Button` from `@/Components/ui/Button` | `resources/js/Components/ui/Button.jsx` | Exists; accepts `loading`, `size`, `variant`, `onClick` |
+| `Card`, `CardHeader`, `CardTitle`, `CardContent` from `@/Components/ui/Card` | `resources/js/Components/ui/Card.jsx` | Exists as named exports |
+| `Input` from `@/Components/ui/Input` | `resources/js/Components/ui/Input.jsx` | Exists; accepts `error` boolean + all native input props |
+| `Label` from `@/Components/ui/Label` | `resources/js/Components/ui/Label.jsx` | Exists |
+| `Table`, `TableHeader`, `TableBody`, `TableRow`, `TableHead`, `TableCell` from `@/Components/ui/Table` | `resources/js/Components/ui/Table.jsx` | Exists as named exports |
+| `route('materials.edit', id)` | Ziggy routes | Route `materials.edit` registered at `GET /materials/{material}/edit` |
+| `route('materials.destroy', id)` | Ziggy routes | Route `materials.destroy` registered — destroy route must exist (TASK-01 removes `.except(['destroy'])`) |
+| `route('materials.adjust-stock', id)` | Ziggy routes | Route `materials.adjust-stock` registered at `POST /materials/{material}/adjust` |
+| `material.projects[n].pivot` | TASK-01 controller: `$material->load(['category', 'supplier', 'projects'])` | The `projects` BelongsToMany relationship has a pivot table with `quantity_used`, `cost_at_time`, `notes` |
 
 ---
 
-## 8. Verified Dependencies
+## 8. Risks
 
-| Dependency | Source | Status |
-|------------|--------|--------|
-| `AppLayout` at `@/Layouts/AppLayout` | Task 01 (Breeze) + project layout work | Exists at `/home/cyclops/Programming/shop-demo/resources/js/Layouts/AppLayout.jsx` |
-| `useForm`, `Link`, `Head` from `@inertiajs/react` | Task 01 (Breeze) | Available |
-| `Button` from `@/Components/ui/Button` | Task 05 (UI primitives) | Exists; accepts `loading`, `disabled`, `type` |
-| `Input` from `@/Components/ui/Input` | Task 05 | Exists; accepts `error` boolean, all standard input props including `type="date"` |
-| `Label` from `@/Components/ui/Label` | Task 05 | Exists |
-| `Select` from `@/Components/ui/Select` | Task 05 | Exists; accepts `options` as `{ value, label }[]`, `error` boolean |
-| `Textarea` from `@/Components/ui/Textarea` | Task 05 | Exists; accepts `error` boolean, `rows` |
-| `Card`, `CardHeader`, `CardTitle`, `CardContent`, `CardFooter` from `@/Components/ui/Card` | Task 05 | All named exports exist in Card.jsx |
-| `route()` global helper | Ziggy (Breeze/Inertia) | Available as global in all Inertia pages |
-| `projects.store` route | Task 06 (routes/controllers) | `POST /projects` via `Route::resource` |
-| `projects.update` route | Task 06 | `PATCH /projects/{project}` via `Route::resource` |
-| `projects.index` route | Task 06 | `GET /projects` via `Route::resource` |
-| `projects.show` route | Task 06 | `GET /projects/{project}` via `Route::resource` |
+### Risk 1: `materials.destroy` route may not exist until TASK-01 is merged
+
+TASK-01 removes `.except(['destroy'])` from the materials resource route. If TASK-06 is delivered before TASK-01 is applied, the Delete button will reference a non-existent route name and Ziggy will throw `Error: route 'materials.destroy' is not found`. This is a dependency ordering issue, not a code defect. The frontend code is correct; it just requires TASK-01 to be applied first.
+
+Mitigation: document the dependency clearly. The task manifest already marks TASK-06 as depending on TASK-01 and TASK-02.
+
+### Risk 2: `material.projects` pivot data may not be accessible
+
+The `projects` relationship is a `BelongsToMany`. The pivot columns (`quantity_used`, `cost_at_time`, `notes`) must be declared with `withPivot()` on the relationship definition in `Material.php`. If they are not, `project.pivot.quantity_used` will be `undefined` in JavaScript.
+
+Mitigation: defensively use `project.pivot?.quantity_used ?? null` throughout, and display `—` for null. This is already the plan. If pivot data is missing, the page degrades gracefully (shows `—` in all quantity/cost cells) rather than throwing a JS error.
+
+### Risk 3: `quantity_on_hand` is a decimal stored as a string
+
+MySQL `decimal(10,2)` is returned by Eloquent as a string (e.g., `"42.50"`) when not explicitly cast. Comparing `material.quantity_on_hand <= material.low_stock_threshold` with string values can give incorrect results due to lexicographic comparison.
+
+Mitigation: use `parseFloat()` for the comparison:
+
+```jsx
+{material.low_stock_threshold != null &&
+ parseFloat(material.quantity_on_hand) <= parseFloat(material.low_stock_threshold) && (
+    <Badge color="#dc2626">Low Stock</Badge>
+)}
+```
+
+Apply the same `parseFloat` in the `totalCost` reduction if values come through as strings.
+
+### Risk 4: `adjustForm.reset()` in `onSuccess` fires before Inertia page reload
+
+Inertia's `onSuccess` callback fires after the server responds with a redirect and Inertia has updated the page. `adjustForm.reset()` is therefore called after the component re-renders with the new server data. This is the correct and safe approach — the same pattern used in `Projects/Show.jsx` for photo uploads and note submissions.
+
+### Risk 5: `route()` global not available
+
+Same risk as all other Inertia pages. Ziggy must be installed and the `@routes` Blade directive present in `resources/views/app.blade.php`. This is a pre-existing environment concern not specific to this task.
 
 ---
 
-## 9. Risks
+## 9. Acceptance Criteria Coverage
 
-### Risk 1: `route()` helper not available
-
-Ziggy must be installed and the `@routes` Blade directive included in `resources/views/app.blade.php`. If `route()` throws `ReferenceError: route is not defined`, the Ziggy package was not installed or the directive is missing.
-
-**Mitigation:** Check `package.json` for `ziggy-js` and check `app.blade.php` for `@routes`. If missing, this is a Task 01 or environment setup issue, not a Task 06 issue. As a workaround, replace `route('projects.store')` with the literal string `'/projects'`.
-
-### Risk 2: `Card` named exports not recognized
-
-`Card.jsx` uses named exports (not a default export). The import must use the named form:
-
-```js
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/Components/ui/Card';
-```
-
-If the implementor mistakenly uses `import Card from '@/Components/ui/Card'`, the component will be undefined.
-
-### Risk 3: `project.deadline` format
-
-If the backend returns `deadline` as a full ISO datetime string (e.g., `"2025-12-31T00:00:00.000000Z"`), the `<input type="date">` will show blank because it requires `YYYY-MM-DD`. The implementor must ensure the controller serializes the date correctly. As a defensive measure, the form value can be sliced:
-
-```js
-deadline: project.deadline ? project.deadline.substring(0, 10) : '',
-```
-
-### Risk 4: Boolean cast for `is_commission`
-
-MySQL stores boolean as `tinyint(1)`. Eloquent returns this as PHP `true`/`false`, which Inertia serializes to JSON `true`/`false`. In JavaScript, `false` is a valid initial value for a checkbox. However, if the column is returned as `0` or `1` (not cast), `useForm` will receive `0` for the checkbox, which evaluates as falsy but React may warn about an uncontrolled input. Ensure the `Project` model casts `is_commission` as a boolean:
-
-```php
-protected $casts = [
-    'is_commission' => 'boolean',
-];
-```
-
-If not cast, the frontend guard `project.is_commission ?? false` still provides `0` (not `false`), which is still falsy and will work for `checked={...}` but is not ideal. The `!!` operator can coerce it: `is_commission: !!project.is_commission`.
-
----
-
-## 10. Acceptance Criteria Coverage
-
-| Criterion | How Met |
-|-----------|---------|
-| Create.jsx receives `{ statuses, priorities }` | Destructured in component props signature |
-| Create.jsx uses `useForm` POSTing to `route('projects.store')` | `form.post(route('projects.store'))` in `handleSubmit` |
-| Edit.jsx receives `{ project, statuses, priorities }` | Destructured in component props signature |
-| Edit.jsx pre-populates from `project` | `useForm` initial values use `project.*` |
-| Edit.jsx PATCHes via `form.patch(route('projects.update', project.slug))` | Called in `handleSubmit` |
-| All 12 fields present | All listed in `useForm` and rendered with corresponding inputs |
-| Status/priority as `Select` with options from props | `<Select options={statuses} ...>` and `<Select options={priorities} ...>` |
-| `is_commission` checkbox conditionally shows client fields | `{form.data.is_commission && (...)}` wraps client_name + client_contact |
-| Inline validation errors from `form.errors` | Each field followed by `{form.errors.fieldName && <p>...}` |
-| Submit disabled/loading while `form.processing` | `<Button disabled={form.processing} loading={form.processing}>` |
-| Cancel link back to projects list (Create) / project show (Edit) | Inertia `Link` with `route('projects.index')` / `route('projects.show', project.slug)` |
-| Dates as `<input type="date">` | `deadline` rendered via `<Input type="date" ...>` |
+| Criterion (from Task Spec) | How Covered in This Plan |
+|---------------------------|--------------------------|
+| All material fields display correctly; nulls show `—` | Every `<dd>` uses `|| '—'` or optional chaining; null-safe `formatCurrency` returns `—` for null |
+| Flash messages from session display via `usePage().props.flash` | All four Alert variants rendered from `flash?.success`, `flash?.error`, `flash?.warning`, `flash?.info` |
+| Page header: material name as `h1`, Edit link, Delete button | Implemented in page header block; Edit uses `<Link>` + `<Button variant="outline">`, Delete uses `<Button variant="destructive">` with `confirm()` |
+| Overview Card: two-column definition list with all specified fields | `<dl>` grid with six two-column items + two full-width items for description and notes |
+| Stock Level Card: large quantity + unit, low stock badge, unit cost, threshold | All four display elements implemented; badge gated on threshold != null && qty <= threshold |
+| Stock Adjustment form: `useForm({ quantity, notes })`, POST to `materials.adjust-stock`, reset on success | `adjustForm` at component top, `handleAdjust` posts to correct route, `onSuccess: () => adjustForm.reset()` |
+| quantity input: number, step=0.01, placeholder "+10 or -5", no min | `<Input type="number" step="0.01" placeholder="+10 or -5">` — no `min` attribute so negative values are allowed |
+| Project Usage Card: table with Project (link), Qty Used, Unit, Cost at Time, Total Cost, Notes | All 6 columns rendered; Project cell is amber `<Link>` using `project.slug` |
+| Project Usage: footer row with sum of total costs | Footer `TableRow` computed from `totalCost` reduction, only rendered when projects.length > 0 |
+| Project Usage: empty state message | `<p>` rendered when `(material.projects ?? []).length === 0` |
+| Delete button: confirm then `router.delete` | `handleDelete` uses `confirm()` guard then `router.delete(route('materials.destroy', material.id))` |
+| Wraps in `AppLayout` with appropriate `<Head>` | `<AppLayout>` + `<Head title={material.name} />` |
