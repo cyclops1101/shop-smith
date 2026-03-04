@@ -1,19 +1,19 @@
-# Task 04: Materials Index Page — Implementation Plan
+# Task 04: Tools Index Page — Implementation Plan
 
 **Task ID:** 04
 **Domain:** frontend
-**Scope:** Replace stub `resources/js/Pages/Materials/Index.jsx` with a full working page following the `Projects/Index.jsx` pattern.
+**Scope:** Replace stub `resources/js/Pages/Tools/Index.jsx` with a full working page following the `Materials/Index.jsx` pattern exactly.
 
 ---
 
 ## 1. Approach
 
-The existing `Materials/Index.jsx` is a three-line stub that renders a static heading. It must be replaced wholesale with a real page. The implementation strategy is:
+The existing `Tools/Index.jsx` is a 16-line stub that renders only a static heading. It must be replaced wholesale with a real page. The implementation strategy is:
 
-1. Follow the structure of `Projects/Index.jsx` exactly: same import set, same component decomposition pattern (FilterBar sub-component, table sub-component, pagination, main export with debounced search).
-2. Adapt for the materials domain: two Select filters (category, supplier) instead of (status, priority); eight table columns instead of five; a low-stock red Badge instead of status/priority Badges; currency formatting for unit cost.
-3. No new UI primitives are needed — all required components (`Badge`, `Button`, `Input`, `Select`, `Table` family) are already present in `resources/js/Components/ui/`.
-4. No backend changes are required for this task. The controller stub at `app/Http/Controllers/MaterialController.php` and the route at `Route::resource('materials', ...)` already exist. (The controller `index()` method will need to be fleshed out in a separate backend task to pass the correct props, but the frontend page must be ready to consume them.)
+1. Follow the structure of `Materials/Index.jsx` exactly: same import set, same component decomposition pattern (FilterBar sub-component, table sub-component, pagination, main export with debounced search).
+2. Adapt for the tools domain: one Select filter (category only, no supplier) instead of two; seven table columns (Name, Brand, Model, Category, Location, Usage Hours, Actions) instead of eight; no Badge for status; no currency formatting required.
+3. No new UI primitives are needed — all required components (`Button`, `Input`, `Select`, `Table` family) are already present in `resources/js/Components/ui/`.
+4. No backend changes are required for this task. The controller and route already exist. The frontend page must be ready to consume the props that the controller will pass.
 
 ---
 
@@ -21,7 +21,7 @@ The existing `Materials/Index.jsx` is a three-line stub that renders a static he
 
 | File | Action |
 |---|---|
-| `resources/js/Pages/Materials/Index.jsx` | Full replacement — remove stub, write complete implementation |
+| `resources/js/Pages/Tools/Index.jsx` | Full replacement — remove stub, write complete implementation |
 
 No other files require changes for this task.
 
@@ -32,12 +32,12 @@ No other files require changes for this task.
 The page is composed of three internal components plus the default export:
 
 ```
-MaterialsIndex (default export)
-  └── FilterBar          (text search + category Select + supplier Select)
-  └── MaterialsTable     (table + empty state + prev/next pagination)
+ToolsIndex (default export)
+  └── FilterBar        (text search + category Select)
+  └── ToolsTable       (table + empty state + prev/next pagination)
 ```
 
-This mirrors the `ProjectsIndex` / `FilterBar` / `ProjectsTable` decomposition exactly.
+This mirrors the `MaterialsIndex` / `FilterBar` / `MaterialsTable` decomposition exactly, with the supplier filter removed and table columns adjusted for the tools schema.
 
 ---
 
@@ -46,125 +46,248 @@ This mirrors the `ProjectsIndex` / `FilterBar` / `ProjectsTable` decomposition e
 ### 4.1 Imports
 
 ```jsx
-import { useState, useRef, useCallback } from 'react';
+import { useRef, useCallback } from 'react';
 import { Link, Head, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
-import Badge from '@/Components/ui/Badge';
 import Button from '@/Components/ui/Button';
 import Input from '@/Components/ui/Input';
 import Select from '@/Components/ui/Select';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/Components/ui/Table';
 ```
 
-`Card` / `CardContent` are not imported — materials have no board view. `useState` is kept in case a view toggle is added later; in this iteration it is only used for the debounce timer management which is done via `useRef`. `useState` can be removed if not needed — see decision 4.4.
+`Badge` is not imported — the tools table spec includes no badge-type indicators. `useState` is not imported — no view toggle is needed; debounce state is managed via `useRef`.
 
-### 4.2 Helper: `formatCost(value)`
+### 4.2 FilterBar component
+
+Props: `{ filters, categoryOptions, onSearchChange, onCategoryChange }`
+
+- Search input: `<Input type="search" placeholder="Search tools..." defaultValue={filters.search ?? ''} onChange={onSearchChange} />`
+- Category select: `<Select options={categoryOptions} placeholder="All categories" value={filters.category ?? ''} onChange={onCategoryChange} />`
+
+Layout: flex row, gap-3, items-center. Search input has `flex-1 min-w-48`. Category select has fixed width `w-44`. This matches the `FilterBar` layout in `Materials/Index.jsx`.
 
 ```jsx
-function formatCost(value) {
-    if (value === null || value === undefined) return '—';
-    return '$' + Number(value).toFixed(2);
+function FilterBar({ filters, categoryOptions, onSearchChange, onCategoryChange }) {
+    return (
+        <div className="flex flex-wrap gap-3 items-center">
+            <div className="flex-1 min-w-48">
+                <Input
+                    type="search"
+                    placeholder="Search tools..."
+                    defaultValue={filters.search ?? ''}
+                    onChange={onSearchChange}
+                    className="w-full"
+                />
+            </div>
+            <div className="w-44">
+                <Select
+                    options={categoryOptions}
+                    placeholder="All categories"
+                    value={filters.category ?? ''}
+                    onChange={onCategoryChange}
+                />
+            </div>
+        </div>
+    );
 }
 ```
 
-`unit_cost` is `decimal(10,2)` stored in MySQL and returned as a numeric string by Laravel's JSON serialization (e.g., `"12.50"`). `Number(value).toFixed(2)` handles both string and numeric input correctly and always produces two decimal places.
+### 4.3 ToolsTable component
 
-### 4.3 FilterBar component
+Props: `{ tools }` (the full paginator object)
 
-Props: `{ filters, categories, suppliers, onSearchChange, onCategoryChange, onSupplierChange }`
-
-- Search: `<Input type="search" defaultValue={filters.search ?? ''} onChange={onSearchChange} />`
-- Category: `<Select options={categoryOptions} placeholder="All categories" value={filters.category ?? ''} onChange={onCategoryChange} />`
-- Supplier: `<Select options={supplierOptions} placeholder="All suppliers" value={filters.supplier ?? ''} onChange={onSupplierChange} />`
-
-`categories` and `suppliers` arrays from props are mapped to `{ value: item.id, label: item.name }` option objects inside `FilterBar`. This is done inline at render time — no need for a top-level constant since these are dynamic prop values.
-
-### 4.4 Low-stock logic
-
-A material is "low stock" when `quantity_on_hand <= low_stock_threshold` AND `low_stock_threshold` is not null. The table cell for "In Stock" renders a red `<Badge variant="destructive">` wrapping the quantity when this condition is true, and plain text otherwise.
-
-```jsx
-const isLowStock =
-    material.low_stock_threshold !== null &&
-    material.quantity_on_hand <= material.low_stock_threshold;
-```
-
-Decision: use `variant="destructive"` (which maps to `bg-red-100 text-red-700 border-red-200` in `Badge.jsx`) rather than a `color` prop, to stay consistent with the existing shadcn-style variant system and avoid hard-coded hex values.
-
-### 4.5 MaterialsTable component
-
-Props: `{ materials }` (the full paginator object)
-
-Columns: Name (Link), SKU, Category, Unit, In Stock, Low Stock indicator, Unit Cost, Actions (Edit Link).
-
-The spec lists "Low Stock (red Badge)" as its own column. Implementation decision: render it as part of the "In Stock" cell rather than a separate column, to keep the table readable. The "In Stock" cell shows the quantity; if low stock, it wraps the quantity in a `<Badge variant="destructive">`. A separate "Low Stock" column that is empty for normal items would waste horizontal space. **If the spec is read strictly as eight separate columns**, the alternative is a dedicated "Low Stock" column that either renders a small red "Low" badge or is empty — this is noted as a risk (see section 7).
-
-Table column order (8 columns):
+Columns (7 total):
 
 | # | Head | Content |
 |---|---|---|
-| 1 | Name | `<Link href="/materials/{id}">` with material name |
-| 2 | SKU | `material.sku` or `—` if null |
-| 3 | Category | `material.category?.name` or `—` |
-| 4 | Unit | `material.unit` (string enum value from backend) |
-| 5 | In Stock | quantity_on_hand, wrapped in `<Badge variant="destructive">` when low stock |
-| 6 | Low Stock At | `material.low_stock_threshold` or `—` |
-| 7 | Unit Cost | `formatCost(material.unit_cost)` |
-| 8 | Actions | `<Link href="/materials/{id}/edit">Edit</Link>` |
+| 1 | Name | `<Link href="/tools/{id}">` in amber, tool name |
+| 2 | Brand | `tool.brand` or `—` if null |
+| 3 | Model | `tool.model_number` or `—` if null |
+| 4 | Category | `tool.category?.name` or `—` if null |
+| 5 | Location | `tool.location` or `—` if null |
+| 6 | Usage Hours | `tool.total_usage_hours` formatted to 1 decimal place, or `—` |
+| 7 | Actions | `<Link href="/tools/{id}/edit">Edit</Link>` |
 
-### 4.6 Pagination
+The Name column link uses the tool ULID (`tool.id`) as the URL segment, matching the route binding convention for non-project models (ULID, not slug).
 
-Identical to `ProjectsTable`: read `links.prev` and `links.next` from the paginator, render enabled `<Link>` for each that exists and a greyed disabled `<span>` for each that does not. Show "Page X of Y (Z total)" counter.
-
-### 4.7 Main export: `MaterialsIndex`
-
-Props: `{ materials, filters, categories, suppliers }`
+The `total_usage_hours` field is `decimal(10,2)` in the database. Display as a number with one decimal place (e.g., `42.5`). Use a small helper:
 
 ```jsx
-export default function MaterialsIndex({ materials, filters, categories, suppliers }) {
+const formatHours = (value) => {
+    if (value === null || value === undefined) return '—';
+    return Number(value).toFixed(1);
+};
+```
+
+Pagination is identical to `MaterialsTable`: read `links.prev` and `links.next` from the paginator object, render enabled `<Link>` for each that exists and a greyed disabled `<span>` for each that does not. Show "Page X of Y (Z total)" counter at left.
+
+Empty state: when `data.length === 0`, render a single `<TableRow>` with a `<TableCell colSpan={7}>` containing `"No tools found."` centred in gray.
+
+```jsx
+function ToolsTable({ tools }) {
+    const { data, links } = tools;
+    const prevLink = links?.prev;
+    const nextLink = links?.next;
+
+    return (
+        <div>
+            <div className="rounded-lg border border-gray-200 overflow-hidden">
+                <Table>
+                    <TableHeader>
+                        <TableRow>
+                            <TableHead>Name</TableHead>
+                            <TableHead>Brand</TableHead>
+                            <TableHead>Model</TableHead>
+                            <TableHead>Category</TableHead>
+                            <TableHead>Location</TableHead>
+                            <TableHead>Usage Hours</TableHead>
+                            <TableHead className="text-right">Actions</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {data.length === 0 ? (
+                            <TableRow>
+                                <TableCell colSpan={7} className="text-center text-gray-400 py-10">
+                                    No tools found.
+                                </TableCell>
+                            </TableRow>
+                        ) : (
+                            data.map((tool) => (
+                                <TableRow key={tool.id}>
+                                    <TableCell className="font-medium">
+                                        <Link
+                                            href={`/tools/${tool.id}`}
+                                            className="text-amber-700 hover:text-amber-900 hover:underline"
+                                        >
+                                            {tool.name}
+                                        </Link>
+                                    </TableCell>
+                                    <TableCell className="text-gray-500 text-sm">
+                                        {tool.brand ?? '—'}
+                                    </TableCell>
+                                    <TableCell className="text-gray-500 text-sm">
+                                        {tool.model_number ?? '—'}
+                                    </TableCell>
+                                    <TableCell className="text-gray-500 text-sm">
+                                        {tool.category?.name ?? '—'}
+                                    </TableCell>
+                                    <TableCell className="text-gray-500 text-sm">
+                                        {tool.location ?? '—'}
+                                    </TableCell>
+                                    <TableCell className="text-gray-700">
+                                        {formatHours(tool.total_usage_hours)}
+                                    </TableCell>
+                                    <TableCell className="text-right">
+                                        <Link
+                                            href={`/tools/${tool.id}/edit`}
+                                            className="text-sm text-gray-500 hover:text-gray-900"
+                                        >
+                                            Edit
+                                        </Link>
+                                    </TableCell>
+                                </TableRow>
+                            ))
+                        )}
+                    </TableBody>
+                </Table>
+            </div>
+
+            {(prevLink || nextLink) && (
+                <div className="mt-4 flex items-center justify-between text-sm text-gray-600">
+                    <span>
+                        Page {tools.current_page} of {tools.last_page} ({tools.total} total)
+                    </span>
+                    <div className="flex gap-2">
+                        {prevLink ? (
+                            <Link
+                                href={prevLink}
+                                className="inline-flex items-center rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm hover:bg-gray-50"
+                            >
+                                Previous
+                            </Link>
+                        ) : (
+                            <span className="inline-flex items-center rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm text-gray-400 cursor-not-allowed">
+                                Previous
+                            </span>
+                        )}
+                        {nextLink ? (
+                            <Link
+                                href={nextLink}
+                                className="inline-flex items-center rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm hover:bg-gray-50"
+                            >
+                                Next
+                            </Link>
+                        ) : (
+                            <span className="inline-flex items-center rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm text-gray-400 cursor-not-allowed">
+                                Next
+                            </span>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+```
+
+### 4.4 Main export: `ToolsIndex`
+
+Props: `{ tools, filters, categories }`
+
+- `tools`: Laravel paginator object with `data[]`, `current_page`, `last_page`, `total`, `links`
+- `filters`: object with `search` and `category` keys (may be undefined/null when no filters active)
+- `categories`: array of `{ id, name }` objects for the category select
+
+```jsx
+export default function ToolsIndex({ tools, filters, categories }) {
     const debounceTimer = useRef(null);
 
     const navigate = useCallback((params) => {
-        router.get('/materials', params, { preserveState: true, replace: true });
+        router.get('/tools', params, { preserveState: true, replace: true });
     }, []);
 
     const currentFilters = {
         search:   filters?.search   ?? '',
         category: filters?.category ?? '',
-        supplier: filters?.supplier ?? '',
     };
 
-    const handleSearchChange = useCallback((e) => {
-        const value = e.target.value;
-        if (debounceTimer.current) clearTimeout(debounceTimer.current);
-        debounceTimer.current = setTimeout(() => {
-            navigate({ ...currentFilters, search: value || undefined });
-        }, 300);
-    }, [currentFilters, navigate]);
+    const categoryOptions = (categories ?? []).map((c) => ({ value: c.id, label: c.name }));
 
-    const handleCategoryChange = useCallback((e) => {
-        navigate({ ...currentFilters, category: e.target.value || undefined });
-    }, [currentFilters, navigate]);
+    const handleSearchChange = useCallback(
+        (e) => {
+            const value = e.target.value;
+            if (debounceTimer.current) clearTimeout(debounceTimer.current);
+            debounceTimer.current = setTimeout(() => {
+                navigate({ ...currentFilters, search: value || undefined });
+            }, 300);
+        },
+        [currentFilters, navigate],
+    );
 
-    const handleSupplierChange = useCallback((e) => {
-        navigate({ ...currentFilters, supplier: e.target.value || undefined });
-    }, [currentFilters, navigate]);
+    const handleCategoryChange = useCallback(
+        (e) => {
+            navigate({ ...currentFilters, category: e.target.value || undefined });
+        },
+        [currentFilters, navigate],
+    );
 
     return (
         <AppLayout>
-            <Head title="Materials" />
+            <Head title="Tools" />
             <div className="py-8">
                 <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-                    {/* Header */}
+                    {/* Page header */}
                     <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
                         <div>
-                            <h1 className="text-2xl font-semibold text-gray-900">Materials</h1>
+                            <h1 className="text-2xl font-semibold text-gray-900">Tools</h1>
                             <p className="mt-1 text-sm text-gray-500">
-                                {materials.total} material{materials.total !== 1 ? 's' : ''} total
+                                {tools.total} tool{tools.total !== 1 ? 's' : ''} total
                             </p>
                         </div>
-                        <Link href="/materials/create">
-                            <Button variant="default" size="md">+ New Material</Button>
+                        <Link href="/tools/create">
+                            <Button variant="default" size="md">
+                                + New Tool
+                            </Button>
                         </Link>
                     </div>
 
@@ -172,16 +295,14 @@ export default function MaterialsIndex({ materials, filters, categories, supplie
                     <div className="mb-5">
                         <FilterBar
                             filters={currentFilters}
-                            categories={categories}
-                            suppliers={suppliers}
+                            categoryOptions={categoryOptions}
                             onSearchChange={handleSearchChange}
                             onCategoryChange={handleCategoryChange}
-                            onSupplierChange={handleSupplierChange}
                         />
                     </div>
 
                     {/* Table */}
-                    <MaterialsTable materials={materials} />
+                    <ToolsTable tools={tools} />
                 </div>
             </div>
         </AppLayout>
@@ -189,42 +310,39 @@ export default function MaterialsIndex({ materials, filters, categories, supplie
 }
 ```
 
-No view toggle (list/board) is included — materials have only a list view.
-
 ---
 
 ## 5. Decisions with Rationale
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Low-stock display | Wrap "In Stock" quantity in a `<Badge variant="destructive">` within the same cell | Avoids a mostly-empty seventh column; preserves scannability. The threshold value is shown in a separate "Low Stock At" column so the context is still visible. |
-| Name links to detail page | `/materials/{material.id}` using ULID | Materials use ULID for route binding (per CLAUDE.md convention for non-project models). No slug field exists on `Material`. |
-| Edit link | `/materials/{material.id}/edit` | Same ULID binding as above, matching the existing route `Route::resource('materials', ...)`. |
-| `formatCost` for unit_cost | `'$' + Number(value).toFixed(2)` | `unit_cost` arrives as a string from JSON (MySQL decimal). `Number()` coerces safely; `.toFixed(2)` always gives two decimal places. |
-| `useRef` for debounce timer | Same pattern as `Projects/Index.jsx` | Avoids re-renders on timer updates; ref persists across renders without triggering effects. |
-| Empty string filters cleared to `undefined` | `value || undefined` in navigate calls | Prevents empty string query params (`?search=`) appearing in the URL, keeping URLs clean and consistent with how the backend expects absent filters. |
-| No `useState` for view toggle | Omitted entirely | Materials have one view; adding dead state adds noise. |
+| No supplier filter | Omitted | The tools schema has no `supplier_id` field. Tools have only a `category_id` foreign key. Spec confirms filter bar has only search + category. |
+| Name link URL | `/tools/{tool.id}` using ULID | Tools use ULID for route binding (per CLAUDE.md convention for non-project models). No slug field exists on `Tool`. |
+| Edit link URL | `/tools/{tool.id}/edit` | Same ULID binding, matching `Route::resource('tools', ToolController::class)`. |
+| `model_number` column label | "Model" | The database column is `model_number`; the UI spec says "Model". The column head reads "Model" while the cell accesses `tool.model_number`. |
+| `formatHours` helper | `Number(value).toFixed(1)` | `total_usage_hours` is `decimal(10,2)` in MySQL, serialized as a string. One decimal place is sufficient for hours display and matches workshop context. Returns `—` for null. |
+| Empty string filters cleared to `undefined` | `value || undefined` in navigate calls | Prevents empty string query params (`?search=`, `?category=`) from appearing in the URL, keeping URLs clean and consistent with how the backend expects absent filters. |
+| `useRef` for debounce timer | Same pattern as `Materials/Index.jsx` | Avoids re-renders on timer updates; ref persists across renders without triggering effects. |
+| `categoryOptions` mapped in main export | `(categories ?? []).map(...)` | Keeps `FilterBar` a pure display component that accepts pre-mapped options. Nullish coalescing guards against the controller stub passing no `categories` prop. |
 
 ---
 
 ## 6. Verified Dependencies
 
-All the following are confirmed to exist in the codebase before implementation:
+All the following are confirmed to exist in the codebase:
 
 | Dependency | Location | Status |
 |---|---|---|
 | `AppLayout` | `resources/js/Layouts/AppLayout.jsx` | Confirmed present |
-| `Badge` (with `variant` prop) | `resources/js/Components/ui/Badge.jsx` | Confirmed; supports `variant="destructive"` → `bg-red-100 text-red-700 border-red-200` |
-| `Button` (with `variant`, `size` props) | `resources/js/Components/ui/Button.jsx` | Confirmed; `variant="default"` → amber-600 |
+| `Button` (with `variant`, `size` props) | `resources/js/Components/ui/Button.jsx` | Confirmed; `variant="default"` renders amber-600 button |
 | `Input` (with `type`, `defaultValue`, `onChange`) | `resources/js/Components/ui/Input.jsx` | Confirmed; `forwardRef` wrapped |
-| `Select` (with `options`, `placeholder`, `value`, `onChange`) | `resources/js/Components/ui/Select.jsx` | Confirmed; `options` must be `[{ value, label }]` |
-| `Table`, `TableHeader`, `TableBody`, `TableRow`, `TableHead`, `TableCell` | `resources/js/Components/ui/Table.jsx` | Confirmed; all named exports present |
-| `Link`, `Head`, `router` from `@inertiajs/react` | npm package | Confirmed in use by `Projects/Index.jsx` |
-| Route `GET /materials` | `routes/web.php` line 42 | Confirmed via `Route::resource('materials', MaterialController::class)->except(['destroy'])` |
-| Route `GET /materials/create` | Same resource route | Confirmed |
-| Route `GET /materials/{material}/edit` | Same resource route | Confirmed; binds by ULID |
-
-`Material` model has `category` (BelongsTo `MaterialCategory`) and `supplier` (BelongsTo `Supplier`) relationships — confirmed in `app/Models/Material.php`. The controller must eager-load these before the page can display category/supplier names, but that is a backend concern outside this task's scope.
+| `Select` (with `options`, `placeholder`, `value`, `onChange`) | `resources/js/Components/ui/Select.jsx` | Confirmed; `options` must be `[{ value, label }]` array |
+| `Table`, `TableHeader`, `TableBody`, `TableRow`, `TableHead`, `TableCell` | `resources/js/Components/ui/Table.jsx` | Confirmed; all six named exports present |
+| `Link`, `Head`, `router` from `@inertiajs/react` | npm package | Confirmed in use by `Materials/Index.jsx` |
+| Existing stub `Tools/Index.jsx` | `resources/js/Pages/Tools/Index.jsx` | Confirmed; 16-line stub with `{ tools, categories }` props already declared |
+| Route `GET /tools` | `routes/web.php` | Requires confirmation; expected as `Route::resource('tools', ToolController::class)` |
+| Route `GET /tools/create` | Same resource route | Requires confirmation |
+| Route `GET /tools/{tool}/edit` | Same resource route | Requires confirmation; binds by ULID |
 
 ---
 
@@ -232,32 +350,32 @@ All the following are confirmed to exist in the codebase before implementation:
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Controller `index()` does not yet pass `materials`, `filters`, `categories`, `suppliers` props | High — controller is a stub | The page must be written to receive these props; the backend task to implement `MaterialController::index()` is a dependency for the page to be fully functional. The frontend code should gracefully handle missing props using nullish coalescing (`?? []`, `?? {}`) to avoid runtime errors when the stub controller renders the page. |
-| "Low Stock" column interpretation | Medium — spec says "Low Stock (red Badge)" as a column | If the implementor reads this as a separate standalone column, they should add a dedicated "Low Stock" `<TableHead>` and render a `<Badge variant="destructive">Low</Badge>` (or nothing) in each row. The plan above merges it into "In Stock" for UX reasons, but either interpretation is valid. |
-| `unit` field display | Low | The backend casts `unit` to the `MaterialUnit` enum. Laravel serializes PHP-backed string enums to their raw string value in JSON (e.g., `"board_foot"`). The UI spec does not require a human-readable label in the table — displaying the raw value is acceptable. If a label is needed, a lookup map from `MaterialUnit` values to labels can be added (e.g., `board_foot` → `Board Foot`). |
-| `unit_cost` null handling | Low | `formatCost` returns `'—'` for null/undefined. This is safe because `unit_cost` is nullable in the schema. |
-| Name column link target | Low | If a detail/show page for materials does not yet exist, the Name link will 404. This is acceptable during development; the link target is correct per the resource routing. |
+| Controller `index()` does not yet pass `tools`, `filters`, `categories` props | High — controller is likely a stub | Use nullish coalescing throughout (`?? []`, `?? {}`, `?? ''`) so the page renders without errors when props are absent. The page will show an empty table gracefully. |
+| `tools` prop is undefined (controller passes nothing) | Medium | Wrap all `tools.*` accesses with optional chaining or a default value: `tools?.total ?? 0`, `tools?.data ?? []`. Consider a fallback at the top of the component body. |
+| `model_number` field name differs from spec label "Model" | Low | Confirmed in schema: database column is `model_number`. The UI head uses "Model" for brevity. No mismatch in data access. |
+| `total_usage_hours` precision display | Low | The spec says "Usage Hours" with no formatting requirement. Displaying one decimal place (`toFixed(1)`) is readable and safe. If the team prefers raw value, `String(tool.total_usage_hours)` also works but may show trailing zeros (e.g., `0.00`). |
+| Name link 404s if Show page does not yet exist | Low | `Tools/Show.jsx` exists in the filesystem (confirmed via glob). Whether the controller `show()` method is implemented is a separate concern outside this task's scope. |
+| Route name for `tools/create` | Low | If `Route::resource` is used, `GET /tools/create` is the standard create route. If the route is missing or named differently, the "+ New Tool" link will 404 but will not cause a JS error. |
 
 ---
 
 ## 8. Acceptance Criteria Coverage
 
-| Criterion from spec | How it is satisfied |
+| Criterion from task spec | How it is satisfied |
 |---|---|
-| Header: "Materials" title | `<h1>Materials</h1>` in main export |
-| Header: count | `{materials.total} material{s}` paragraph below h1 |
-| Header: "+ New Material" button | `<Link href="/materials/create"><Button>+ New Material</Button></Link>` |
-| Filter bar: text search debounced 300ms | `handleSearchChange` with `useRef` debounce timer, 300ms delay |
-| Filter bar: category Select | `<Select options={...} value={filters.category}>` in `FilterBar` |
-| Filter bar: supplier Select | `<Select options={...} value={filters.supplier}>` in `FilterBar` |
-| Filter navigation: `router.get('/materials', params, { preserveState: true, replace: true })` | `navigate()` callback used by all three filter handlers |
-| Table column: Name (link) | `<Link href="/materials/{id}">{name}</Link>` in `MaterialsTable` |
-| Table column: SKU | `material.sku \|\| '—'` |
-| Table column: Category | `material.category?.name \|\| '—'` |
-| Table column: Unit | `material.unit` |
-| Table column: In Stock | `material.quantity_on_hand` |
-| Table column: Low Stock (red Badge) | `<Badge variant="destructive">` wrapping quantity when `quantity_on_hand <= low_stock_threshold` |
-| Table column: Unit Cost ($X.XX) | `formatCost(material.unit_cost)` |
-| Table column: Actions (Edit link) | `<Link href="/materials/{id}/edit">Edit</Link>` |
-| Pagination prev/next | Links rendered from `materials.links.prev` / `materials.links.next`; disabled spans when absent |
-| Empty state: "No materials found." | `<TableCell colSpan={8}>No materials found.</TableCell>` when `data.length === 0` |
+| Page header: "Tools" title | `<h1>Tools</h1>` in main export |
+| Page header: total count | `{tools.total} tool{s}` paragraph below h1 |
+| Page header: "+ New Tool" button | `<Link href="/tools/create"><Button>+ New Tool</Button></Link>` |
+| Filter bar: debounced search (300ms) | `handleSearchChange` with `useRef` timer, 300ms delay, `preserveState: true` |
+| Filter bar: category Select | `<Select options={categoryOptions} value={filters.category}>` in `FilterBar` |
+| Filter navigation | `router.get('/tools', params, { preserveState: true, replace: true })` in `navigate()` |
+| Table column: Name (amber link to /tools/{id}) | `<Link href="/tools/{tool.id}" className="text-amber-700 ...">` |
+| Table column: Brand | `tool.brand ?? '—'` |
+| Table column: Model | `tool.model_number ?? '—'` |
+| Table column: Category | `tool.category?.name ?? '—'` |
+| Table column: Location | `tool.location ?? '—'` |
+| Table column: Usage Hours | `formatHours(tool.total_usage_hours)` |
+| Table column: Actions (Edit link) | `<Link href="/tools/{tool.id}/edit">Edit</Link>` |
+| All nulls display as "—" | `?? '—'` on every nullable field; `formatHours` returns `'—'` for null |
+| Pagination: Previous/Next with page info | Links from `tools.links.prev` / `tools.links.next`; disabled spans when absent; "Page X of Y (Z total)" counter |
+| Empty state: "No tools found." | `<TableCell colSpan={7}>No tools found.</TableCell>` when `data.length === 0` |

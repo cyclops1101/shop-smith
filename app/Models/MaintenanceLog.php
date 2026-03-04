@@ -21,6 +21,7 @@ class MaintenanceLog extends Model
         'performed_at',
         'cost',
         'description',
+        'usage_hours_at',
     ];
 
     protected function casts(): array

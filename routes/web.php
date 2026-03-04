@@ -48,11 +48,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Suppliers
     Route::resource('suppliers', SupplierController::class);
 
-    // Tools (resource: index, create, store, show, edit, update — no destroy)
-    Route::resource('tools', ToolController::class)->except(['destroy']);
+    // Tools
+    Route::resource('tools', ToolController::class);
 
     // Tool sub-resources
     Route::post('/tools/{tool}/maintenance', [ToolController::class, 'logMaintenance'])->name('tools.log-maintenance');
+    Route::post('/tools/{tool}/schedules', [ToolController::class, 'storeSchedule'])->name('tools.schedules.store');
+    Route::delete('/tools/{tool}/schedules/{schedule}', [ToolController::class, 'destroySchedule'])->name('tools.schedules.destroy');
 
     // Finance
     Route::get('/finance', [FinanceController::class, 'index'])->name('finance.index');

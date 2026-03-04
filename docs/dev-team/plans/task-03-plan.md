@@ -1,326 +1,372 @@
-# Task 03 Plan: Supplier CRUD Backend
+# TASK-03: MaintenanceSchedule Model Scopes and Helpers — Implementation Plan
 
 **Task ID:** TASK-03
 **Domain:** backend
-**Feature:** Supplier CRUD — controller, two form requests, routes
+**Feature:** Add `scopeOverdue`, `scopeDueSoon`, `isOverdue()`, `isDueSoon()`, and appended
+accessors `is_overdue` / `is_due_soon` to `MaintenanceSchedule`.
 **Status:** pending
 
 ---
 
 ## 1. Approach
 
-Implement a full Supplier CRUD following the project conventions from CLAUDE.md:
+All additions are purely additive to `app/Models/MaintenanceSchedule.php`. No migrations,
+controllers, routes, or frontend files are touched.
 
-- **Fat models, thin controllers** — the `Supplier` model already defines all `$fillable` fields and the `materials()` / `expenses()` relationships. No model changes are required.
-- **Form requests for all validation** — two new `FormRequest` classes handle `store` and `update` validation. The controller never calls `$request->validate()`.
-- **ULID primary keys** — `Supplier` already uses `HasUlids`. Route model binding uses the ULID directly (no slug — suppliers have no slug field). Laravel resolves `Supplier $supplier` from the `{supplier}` route segment automatically via the ULID `id` column because `HasUlids` configures it as the route key.
-- **Hard delete** — per CLAUDE.md: "Hard delete everything else." Suppliers have no `SoftDeletes` trait in the model and must not gain one.
-- **Search via LIKE, not Scout** — `index()` uses an Eloquent `LIKE` query across `name`, `contact_name`, and `email`. Scout is used only for Projects per the spec; the task spec explicitly requires LIKE for suppliers.
-- **Inertia responses** — all read methods return `Inertia::render(...)`. Write methods return `RedirectResponse` with a `with('success', ...)` flash.
+The implementation follows the exact pattern established by `app/Models/Material.php`:
 
-No service class is needed — supplier persistence is straightforward `create` / `update` / `delete` with no side effects.
+- Eloquent scopes type-hint `Builder $query` and return `Builder`.
+- Instance helper methods are pure boolean checks using already-cast model attributes (no
+  extra queries).
+- Appended accessors delegate to the instance helpers so logic is never duplicated.
+
+`next_due_at` is already cast to `'datetime'` in `casts()`, which means it is a `Carbon`
+instance when not null. All temporal comparisons use native Carbon methods (`isPast()`, `lte()`).
 
 ---
 
-## 2. Files to Create or Modify
+## 2. File to Modify
 
 | File | Action |
 |------|--------|
-| `app/Http/Requests/StoreSupplierRequest.php` | Create |
-| `app/Http/Requests/UpdateSupplierRequest.php` | Create |
-| `app/Http/Controllers/SupplierController.php` | Create |
-| `routes/web.php` | Modify — add `Route::resource('suppliers', SupplierController::class)` inside the existing `auth + verified` middleware group |
+| `app/Models/MaintenanceSchedule.php` | Modify — add constant, `$appends`, scopes, helpers, accessors |
 
-No model changes. No migration changes (suppliers table already exists with all required columns as confirmed by the model's `$fillable`). No frontend files in this task.
+No other files require changes.
 
 ---
 
-## 3. Detailed Implementation
+## 3. Current State of `MaintenanceSchedule`
 
-### 3.1 `StoreSupplierRequest`
-
-**File:** `app/Http/Requests/StoreSupplierRequest.php`
+`app/Models/MaintenanceSchedule.php` (45 lines as read):
 
 ```php
 <?php
 
-namespace App\Http\Requests;
+namespace App\Models;
 
-use Illuminate\Foundation\Http\FormRequest;
+use App\Enums\MaintenanceType;
+use Illuminate\Database\Eloquent\Concerns\HasUlids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
-class StoreSupplierRequest extends FormRequest
+class MaintenanceSchedule extends Model
 {
-    public function authorize(): bool
-    {
-        return true;
-    }
+    use HasFactory, HasUlids;
 
-    public function rules(): array
+    protected $fillable = [
+        'tool_id',
+        'maintenance_type',
+        'task',
+        'interval_days',
+        'interval_hours',
+        'last_performed_at',
+        'next_due_at',
+        'notes',
+    ];
+
+    protected function casts(): array
     {
         return [
-            'name'         => ['required', 'string', 'max:255'],
-            'contact_name' => ['nullable', 'string', 'max:255'],
-            'email'        => ['nullable', 'email', 'max:255'],
-            'phone'        => ['nullable', 'string', 'max:50'],
-            'website'      => ['nullable', 'url', 'max:500'],
-            'address'      => ['nullable', 'string'],
-            'notes'        => ['nullable', 'string'],
+            'maintenance_type'  => MaintenanceType::class,
+            'last_performed_at' => 'datetime',
+            'next_due_at'       => 'datetime',
         ];
+    }
+
+    public function tool(): BelongsTo
+    {
+        return $this->belongsTo(Tool::class);
+    }
+
+    public function maintenanceLogs(): HasMany
+    {
+        return $this->hasMany(MaintenanceLog::class, 'schedule_id');
     }
 }
 ```
 
-`authorize()` returns `true` unconditionally — this is the established pattern in every other `FormRequest` in this codebase (see `StoreMaterialRequest`, `StoreToolRequest`, `StoreProjectRequest`). Route-level auth is enforced by the `auth + verified` middleware group in `routes/web.php`.
+---
 
-### 3.2 `UpdateSupplierRequest`
+## 4. Detailed Changes
 
-**File:** `app/Http/Requests/UpdateSupplierRequest.php`
+### 4.1 Add `Builder` import
+
+Add `use Illuminate\Database\Eloquent\Builder;` alongside the existing use statements.
+
+The full updated import block becomes:
+
+```php
+use App\Enums\MaintenanceType;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Concerns\HasUlids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+```
+
+### 4.2 Add `DUE_SOON_DAYS` constant
+
+Immediately after the class declaration line, before `$fillable`:
+
+```php
+public const int DUE_SOON_DAYS = 7;
+```
+
+### 4.3 Add `$appends` property
+
+After `$fillable`, before the `casts()` method:
+
+```php
+protected $appends = ['is_overdue', 'is_due_soon'];
+```
+
+### 4.4 Add `scopeOverdue` scope
+
+After the `maintenanceLogs()` relation, in a new "Query Scopes" section:
+
+```php
+public function scopeOverdue(Builder $query): Builder
+{
+    return $query->whereNotNull('next_due_at')
+        ->where('next_due_at', '<', now());
+}
+```
+
+Logic: returns only rows where `next_due_at` is set and is strictly in the past.
+
+### 4.5 Add `scopeDueSoon` scope
+
+```php
+public function scopeDueSoon(Builder $query): Builder
+{
+    return $query->whereNotNull('next_due_at')
+        ->where('next_due_at', '>=', now())
+        ->where('next_due_at', '<=', now()->addDays(self::DUE_SOON_DAYS));
+}
+```
+
+Logic: returns only rows where `next_due_at` is set, is not yet past, and falls within the
+next `DUE_SOON_DAYS` (7) days. Both `now()` calls execute at query-build time within the same
+request lifecycle — no meaningful drift between the two calls.
+
+### 4.6 Add `isOverdue()` instance helper
+
+```php
+public function isOverdue(): bool
+{
+    return $this->next_due_at !== null
+        && $this->next_due_at->isPast();
+}
+```
+
+Uses Carbon's `isPast()` on the already-cast `next_due_at` attribute. No database query.
+
+### 4.7 Add `isDueSoon()` instance helper
+
+```php
+public function isDueSoon(): bool
+{
+    return $this->next_due_at !== null
+        && ! $this->next_due_at->isPast()
+        && $this->next_due_at->lte(now()->addDays(self::DUE_SOON_DAYS));
+}
+```
+
+Logic: not null, not yet past, and within the due-soon window. The three conditions mirror the
+`scopeDueSoon` logic exactly. No database query.
+
+### 4.8 Add appended accessor methods
+
+```php
+public function getIsOverdueAttribute(): bool
+{
+    return $this->isOverdue();
+}
+
+public function getIsDueSoonAttribute(): bool
+{
+    return $this->isDueSoon();
+}
+```
+
+With `$appends = ['is_overdue', 'is_due_soon']` declared, Eloquent will call these during
+`toArray()` / `toJson()`. Inertia serialises model props via `toArray()`, so `is_overdue` and
+`is_due_soon` will appear automatically in every Inertia response that includes a
+`MaintenanceSchedule` instance.
+
+---
+
+## 5. Final File (complete, ready for implementation)
 
 ```php
 <?php
 
-namespace App\Http\Requests;
+namespace App\Models;
 
-use Illuminate\Foundation\Http\FormRequest;
+use App\Enums\MaintenanceType;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Concerns\HasUlids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
-class UpdateSupplierRequest extends FormRequest
+class MaintenanceSchedule extends Model
 {
-    public function authorize(): bool
-    {
-        return true;
-    }
+    use HasFactory, HasUlids;
 
-    public function rules(): array
+    public const int DUE_SOON_DAYS = 7;
+
+    protected $fillable = [
+        'tool_id',
+        'maintenance_type',
+        'task',
+        'interval_days',
+        'interval_hours',
+        'last_performed_at',
+        'next_due_at',
+        'notes',
+    ];
+
+    protected $appends = ['is_overdue', 'is_due_soon'];
+
+    protected function casts(): array
     {
         return [
-            'name'         => ['sometimes', 'required', 'string', 'max:255'],
-            'contact_name' => ['sometimes', 'nullable', 'string', 'max:255'],
-            'email'        => ['sometimes', 'nullable', 'email', 'max:255'],
-            'phone'        => ['sometimes', 'nullable', 'string', 'max:50'],
-            'website'      => ['sometimes', 'nullable', 'url', 'max:500'],
-            'address'      => ['sometimes', 'nullable', 'string'],
-            'notes'        => ['sometimes', 'nullable', 'string'],
+            'maintenance_type'  => MaintenanceType::class,
+            'last_performed_at' => 'datetime',
+            'next_due_at'       => 'datetime',
         ];
     }
-}
-```
 
-`sometimes` is prepended to every rule. This is identical to the pattern in `UpdateMaterialRequest` and `UpdateProjectRequest` — `sometimes` means the rule is only evaluated if the field is present in the request payload, supporting partial PATCH-style updates from the frontend form.
+    // ── Relations ──────────────────────────────────────────────────────────
 
-### 3.3 `SupplierController`
-
-**File:** `app/Http/Controllers/SupplierController.php`
-
-```php
-<?php
-
-namespace App\Http\Controllers;
-
-use App\Http\Requests\StoreSupplierRequest;
-use App\Http\Requests\UpdateSupplierRequest;
-use App\Models\Supplier;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Http\Request;
-use Inertia\Inertia;
-use Inertia\Response;
-
-class SupplierController extends Controller
-{
-    public function index(Request $request): Response
+    public function tool(): BelongsTo
     {
-        $search = $request->input('search');
-
-        $suppliers = Supplier::query()
-            ->when($search, function ($query, $search) {
-                $query->where(function ($q) use ($search) {
-                    $q->where('name', 'like', "%{$search}%")
-                      ->orWhere('contact_name', 'like', "%{$search}%")
-                      ->orWhere('email', 'like', "%{$search}%");
-                });
-            })
-            ->orderBy('name')
-            ->paginate(20)
-            ->withQueryString();
-
-        return Inertia::render('Suppliers/Index', [
-            'suppliers' => $suppliers,
-            'filters'   => ['search' => $search],
-        ]);
+        return $this->belongsTo(Tool::class);
     }
 
-    public function create(): Response
+    public function maintenanceLogs(): HasMany
     {
-        return Inertia::render('Suppliers/Create');
+        return $this->hasMany(MaintenanceLog::class, 'schedule_id');
     }
 
-    public function store(StoreSupplierRequest $request): RedirectResponse
-    {
-        $supplier = Supplier::create($request->validated());
+    // ── Query Scopes ───────────────────────────────────────────────────────
 
-        return redirect()->route('suppliers.show', $supplier)
-            ->with('success', 'Supplier created successfully.');
+    public function scopeOverdue(Builder $query): Builder
+    {
+        return $query->whereNotNull('next_due_at')
+            ->where('next_due_at', '<', now());
     }
 
-    public function show(Supplier $supplier): Response
+    public function scopeDueSoon(Builder $query): Builder
     {
-        $supplier->loadCount('materials');
-
-        return Inertia::render('Suppliers/Show', [
-            'supplier' => $supplier,
-        ]);
+        return $query->whereNotNull('next_due_at')
+            ->where('next_due_at', '>=', now())
+            ->where('next_due_at', '<=', now()->addDays(self::DUE_SOON_DAYS));
     }
 
-    public function edit(Supplier $supplier): Response
+    // ── Instance Helpers ───────────────────────────────────────────────────
+
+    public function isOverdue(): bool
     {
-        return Inertia::render('Suppliers/Edit', [
-            'supplier' => $supplier,
-        ]);
+        return $this->next_due_at !== null
+            && $this->next_due_at->isPast();
     }
 
-    public function update(UpdateSupplierRequest $request, Supplier $supplier): RedirectResponse
+    public function isDueSoon(): bool
     {
-        $supplier->update($request->validated());
-
-        return redirect()->route('suppliers.show', $supplier)
-            ->with('success', 'Supplier updated successfully.');
+        return $this->next_due_at !== null
+            && ! $this->next_due_at->isPast()
+            && $this->next_due_at->lte(now()->addDays(self::DUE_SOON_DAYS));
     }
 
-    public function destroy(Supplier $supplier): RedirectResponse
-    {
-        $supplier->delete();
+    // ── Appended Accessors ─────────────────────────────────────────────────
 
-        return redirect()->route('suppliers.index')
-            ->with('success', 'Supplier deleted successfully.');
+    public function getIsOverdueAttribute(): bool
+    {
+        return $this->isOverdue();
+    }
+
+    public function getIsDueSoonAttribute(): bool
+    {
+        return $this->isDueSoon();
     }
 }
 ```
 
-### 3.4 `routes/web.php` modification
+---
 
-Inside the existing `Route::middleware(['auth', 'verified'])->group(...)` block, add one line after the Tools resource block (before Finance routes, for logical grouping):
+## 6. Key Decisions and Rationale
 
-```php
-// Suppliers (resource: index, create, store, show, edit, update, destroy)
-Route::resource('suppliers', SupplierController::class);
-```
+### Decision 1: Follow the Material model scope pattern exactly
 
-Also add the import at the top of the file alongside the other controller imports:
+`Material` has `scopeLowStock(Builder $query): Builder` and `isLowStock(): bool`. The same
+two-layer pattern (scope for DB queries, instance method for in-memory checks) is replicated
+here. This keeps the codebase internally consistent and predictable.
 
-```php
-use App\Http\Controllers\SupplierController;
-```
+### Decision 2: Appended accessors delegate to instance helpers
 
-The full supplier resource registers these seven routes:
+The accessors `getIsOverdueAttribute` and `getIsDueSoonAttribute` do nothing except call
+`isOverdue()` and `isDueSoon()`. This ensures there is exactly one place where the boolean
+logic lives. If the threshold changes from 7 days, only `DUE_SOON_DAYS` and the two helper
+methods need updating — the accessors and scopes reference `self::DUE_SOON_DAYS` automatically.
 
-| Method | URI | Name | Action |
-|--------|-----|------|--------|
-| GET | `/suppliers` | `suppliers.index` | `index` |
-| GET | `/suppliers/create` | `suppliers.create` | `create` |
-| POST | `/suppliers` | `suppliers.store` | `store` |
-| GET | `/suppliers/{supplier}` | `suppliers.show` | `show` |
-| GET | `/suppliers/{supplier}/edit` | `suppliers.edit` | `edit` |
-| PUT/PATCH | `/suppliers/{supplier}` | `suppliers.update` | `update` |
-| DELETE | `/suppliers/{supplier}` | `suppliers.destroy` | `destroy` |
+### Decision 3: `DUE_SOON_DAYS` as a typed class constant
 
-No `->except([...])` call is needed — all seven standard resource routes are required, including `destroy` (hard delete).
+`public const int DUE_SOON_DAYS = 7` is a PHP 8.3 typed constant. It is declared `public`
+so callers (e.g., frontend-facing query builders or tests) can reference
+`MaintenanceSchedule::DUE_SOON_DAYS` without hardcoding `7`. Using `self::DUE_SOON_DAYS`
+inside the class avoids magic numbers throughout.
+
+### Decision 4: Scope boundary for overdue vs. due soon
+
+`scopeOverdue` uses strict `<` (less than now), and `scopeDueSoon` uses `>=` (greater than or
+equal to now). This mirrors Carbon's `isPast()` which returns `true` when the datetime is
+strictly before the current time. A record where `next_due_at` is exactly the current second
+would be `isPast()` true, making it overdue — not due soon. The SQL and PHP logic are aligned.
+
+### Decision 5: `$appends` and serialisation performance
+
+Adding `$appends` means every `toArray()` / `toJson()` call computes both accessors. Both
+are pure in-memory boolean evaluations with no additional queries. The overhead is negligible
+for a single-user tool. No lazy-loading concern exists.
+
+### Decision 6: No migration required
+
+`next_due_at` is already in `$fillable` and cast to `'datetime'`. This task adds no columns,
+no indexes, and no schema changes.
 
 ---
 
-## 4. Key Decisions and Rationale
+## 7. Edge Cases
 
-### Decision 1: Route model binding uses ULID, not slug
+| Case | Scope Behaviour | Helper Behaviour |
+|------|----------------|-----------------|
+| `next_due_at` is `null` | Excluded by `whereNotNull` | Both helpers return `false` |
+| `next_due_at` is in the past | `scopeOverdue` includes it | `isOverdue()` returns `true`, `isDueSoon()` returns `false` |
+| `next_due_at` is within 7 days (future) | `scopeDueSoon` includes it | `isDueSoon()` returns `true`, `isOverdue()` returns `false` |
+| `next_due_at` is more than 7 days out | Neither scope includes it | Both helpers return `false` |
+| `next_due_at` is exactly now | Treated as overdue (`isPast()` is `true` for non-future instants) | `isOverdue()` returns `true`, `isDueSoon()` returns `false` |
 
-The `Supplier` model has no `slug` field. CLAUDE.md states "Route model binding with slug for projects, ULID for other models." `HasUlids` sets the route key to the `id` column (a ULID), so `{supplier}` in the URI resolves to `Supplier` by ULID automatically with no extra configuration. This is consistent with how `MaterialController` and `ToolController` use their ULID-keyed models.
-
-### Decision 2: LIKE search — not Scout — for `index()`
-
-The task spec explicitly requires "LIKE search on name/contact_name/email (NOT Scout)." Scout with the database driver is configured for `Project` (which implements `Searchable`). `Supplier` does not implement `Searchable` and must not be added to Scout. The LIKE approach with `->when($search, ...)` is correct and sufficient for a solo-user tool with a small supplier list.
-
-The OR group is wrapped in a nested `where(function ($q) {...})` closure to correctly parenthesize the OR clauses — without the closure wrapper, the `orWhere` calls would leak outside any other `where` conditions, producing incorrect SQL. For `index()` there are no other `where` clauses currently, but the closure is correct defensive style.
-
-### Decision 3: `paginate(20)->withQueryString()`
-
-`withQueryString()` appends the current query string (including `search=...`) to pagination links. Without it, navigating to page 2 of a search result would lose the search term. This is the same pattern used in `ProjectController::index()`.
-
-### Decision 4: `loadCount('materials')` in `show()`
-
-`$supplier->loadCount('materials')` appends a `materials_count` integer attribute to the supplier model instance, which the frontend can display (e.g., "12 materials use this supplier"). It does not eager-load the material rows themselves, keeping the `show` response lightweight. The `materials()` relationship is already defined on the `Supplier` model.
-
-### Decision 5: Hard delete in `destroy()`
-
-`$supplier->delete()` performs a hard delete because `Supplier` does not use `SoftDeletes`. Per CLAUDE.md: "Soft deletes on: projects, materials, tools. Hard delete everything else." If a supplier has associated materials, the foreign key in the `materials` table (`supplier_id`) will be set to `NULL` on delete (assuming the migration defines `->nullable()->constrained()->nullOnDelete()`). This is the correct behavior — materials should not be deleted when a supplier is removed.
-
-### Decision 6: Flash messages match existing conventions
-
-All redirect flash keys use `'success'` to match `ProjectController`, which uses `->with('success', '...')` exclusively. The `HandleInertiaRequests` middleware shares `flash.success` with the frontend.
-
-### Decision 7: `index()` passes `filters` array to the frontend
-
-`['search' => $search]` is passed as `filters` so the frontend can repopulate the search input field. This mirrors `ProjectController::index()` which passes `'filters' => $filters`.
+A record cannot be simultaneously overdue and due soon — the conditions are mutually exclusive.
 
 ---
 
-## 5. Verified Dependencies
+## 8. Acceptance Criteria
 
-| Requirement | Status |
-|-------------|--------|
-| `Supplier` model exists with `HasUlids`, `HasFactory`, correct `$fillable` | Confirmed — `app/Models/Supplier.php` |
-| `Supplier::materials()` hasMany relation | Confirmed — `app/Models/Supplier.php` line 24 |
-| `Supplier` has no `SoftDeletes` trait | Confirmed — model only uses `HasFactory` and `HasUlids` |
-| `Supplier` has no `Searchable` trait | Confirmed — Scout is not involved |
-| `auth + verified` middleware group exists in `routes/web.php` | Confirmed — line 27 |
-| All other resource controllers follow the same Inertia + FormRequest pattern | Confirmed — `ProjectController`, `MaterialController`, `ToolController` |
-| `authorize(): bool { return true; }` is the established FormRequest pattern | Confirmed — `StoreMaterialRequest`, `UpdateMaterialRequest`, `StoreToolRequest` all return `true` |
-| `suppliers` table exists with all required columns | Inferred from `Supplier::$fillable` matching task spec fields; model was present in the initial commit |
-| No `slug` column on suppliers table | Confirmed by model — `$fillable` does not include `slug` |
-| `Route::resource` generates all 7 standard routes | Laravel 12 standard behavior, no overrides needed |
-
----
-
-## 6. Risks and Mitigations
-
-### Risk 1: Foreign key constraint violation on `destroy()`
-
-**Risk:** If the `materials.supplier_id` foreign key is `RESTRICT` (not `SET NULL`), deleting a supplier that has associated materials will throw a database integrity error.
-
-**Mitigation:** The migration for `materials` should define `->nullOnDelete()` on the `supplier_id` foreign key. If not already the case, this is a migration concern (Task 01 or a migration fix task). The controller itself calls `$supplier->delete()` correctly — no special handling is needed at the controller level beyond what the DB constraint enforces. The implementer should verify the migration's cascade rule before running tests.
-
-### Risk 2: `LIKE` search performance
-
-**Risk:** `LIKE "%term%"` (leading wildcard) cannot use a B-tree index and will do a full table scan. For a solo woodworker's supplier list, this is not a practical concern.
-
-**Mitigation:** None required. The application is single-user and supplier counts will be small (tens to low hundreds). If performance becomes an issue in the future, a `FULLTEXT` index can be added.
-
-### Risk 3: `withQueryString()` missing from `paginate()`
-
-**Risk:** Forgetting `withQueryString()` causes search pagination to lose the `search` parameter on page 2+.
-
-**Mitigation:** Included explicitly in the implementation per the task spec.
-
-### Risk 4: Route key conflict between `/suppliers/create` and `{supplier}` ULID binding
-
-**Risk:** If the router tries to resolve the literal string `"create"` as a ULID for a `GET /suppliers/create` request, it would fail.
-
-**Mitigation:** Laravel's resource route registration always registers `/suppliers/create` as a named literal route before `{supplier}` pattern routes. No conflict occurs. This is standard Laravel behavior unchanged in v12.
-
----
-
-## 7. Acceptance Criteria Coverage
-
-| Criterion | Implementation |
-|-----------|---------------|
-| `StoreSupplierRequest` with correct rules | Section 3.1 — all 7 fields with required/nullable/type/max rules |
-| `UpdateSupplierRequest` with `sometimes` prefix on all fields | Section 3.2 — `sometimes` prepended to every rule |
-| `index()` LIKE search on name, contact_name, email | `->where('name', 'like', "%{search}%")->orWhere(...)` in nested closure |
-| `index()` not using Scout | No `Supplier::search()` call anywhere |
-| `index()` orderBy name, paginate(20), withQueryString | `->orderBy('name')->paginate(20)->withQueryString()` |
-| `create()` renders Inertia page | `return Inertia::render('Suppliers/Create')` |
-| `store()` uses `Supplier::create`, redirects to show with flash | `Supplier::create($request->validated())` + `redirect()->route('suppliers.show', $supplier)->with('success', ...)` |
-| `show()` loadCount materials | `$supplier->loadCount('materials')` |
-| `edit()` renders with supplier | `Inertia::render('Suppliers/Edit', ['supplier' => $supplier])` |
-| `update()` uses `$supplier->update`, redirects to show | `$supplier->update($request->validated())` + redirect to show |
-| `destroy()` hard delete, redirect to index | `$supplier->delete()` (hard, no SoftDeletes) + `redirect()->route('suppliers.index')` |
-| Routes inside `auth + verified` middleware group | Added inside the existing `Route::middleware(['auth', 'verified'])->group(...)` block |
-| Full resource routes (all 7) registered | `Route::resource('suppliers', SupplierController::class)` with no `->except([])` |
-| ULID primary key / route model binding | `HasUlids` on the model; `{supplier}` resolves by ULID `id` column automatically |
-| Hard delete (no SoftDeletes) | Confirmed by model; `delete()` is permanent |
+| Criterion | Covered By |
+|-----------|-----------|
+| `MaintenanceSchedule::overdue()` scope returns only past `next_due_at` records | `scopeOverdue` — section 4.4 |
+| `MaintenanceSchedule::dueSoon()` scope returns only within-7-day future records | `scopeDueSoon` — section 4.5 |
+| Records with `next_due_at = null` excluded from both scopes | `whereNotNull('next_due_at')` guard in both scopes |
+| `$schedule->isOverdue()` returns correct boolean in-memory | `isOverdue()` — section 4.6 |
+| `$schedule->isDueSoon()` returns correct boolean in-memory | `isDueSoon()` — section 4.7 |
+| `$schedule->toArray()` includes `is_overdue` and `is_due_soon` keys | `$appends` + accessors — sections 4.3 and 4.8 |
+| `is_overdue` and `is_due_soon` appear in Inertia props automatically | Inertia serialises via `toArray()`; `$appends` ensures inclusion |
+| `DUE_SOON_DAYS = 7` constant used throughout (no magic numbers) | `self::DUE_SOON_DAYS` referenced in scope and helper |
+| No existing behaviour broken | Only additive changes; no existing methods modified |
+| No migrations required | Confirmed — `next_due_at` column and cast already exist |

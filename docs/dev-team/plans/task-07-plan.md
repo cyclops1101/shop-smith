@@ -1,473 +1,608 @@
-# Task 07 Plan: Supplier CRUD Pages
+# Task 07 Plan: Tool Controller and Maintenance Feature Tests
 
-**Task ID:** 07
-**Domain:** frontend
-**Files:** Four new JSX page files under `resources/js/Pages/Suppliers/`
+**Task ID:** TASK-07
+**Group:** 3 (Tests)
+**Agent:** backend-laravel
+**Depends on:** TASK-01, TASK-02, TASK-03
+**Estimated complexity:** medium
 
 ---
 
 ## 1. Approach
 
-Create all four Supplier CRUD pages from scratch. No stubs exist. The pages follow the same
-structural conventions established by the Projects CRUD pages: `AppLayout` wrapper, Inertia
-`useForm`/`router`/`usePage`, shadcn-style UI primitives from `Components/ui/`, and flash
-messages via `usePage().props.flash`.
+Fully replace `tests/Feature/ToolControllerTest.php` with ~25 comprehensive tests. The
+existing file contains 4 minimal stub tests that lack setUp, use incorrect naming conventions
+(`test_` prefix rather than `#[Test]` attribute), and make no meaningful assertions.
 
-Suppliers have no enum fields (no status, no priority), so the Index and form pages are
-simpler than their Project equivalents. The seven form fields are all plain text types: one
-required text field, four optional text fields, and two optional Textareas.
+The new test class follows the exact structural pattern from `MaterialControllerTest.php`:
 
-The Show page follows the Projects/Show pattern for page header (with Edit and Delete actions)
-and flash display, but replaces the multi-section layout with a single detail card and a
-materials count callout. Delete is a hard delete via `router.delete`.
+- `RefreshDatabase` trait
+- `private User $user` field
+- `setUp()` calling `User::factory()->create()`
+- All test methods use `#[Test]` attribute (not `@test` docblock, not `test_` prefix)
+- All requests use `$this->actingAs($this->user)`
+- Factories for all test data; no manual DB seeding
 
-Index uses the same debounced search + `router.get` with `preserveState: true` pattern from
-Projects/Index, but without the status/priority filter selects (suppliers have no such fields).
-Pagination uses the prev/next link pattern from Projects/Index (not numbered pages).
+The test suite covers six concern groups:
+1. Auth / access gate
+2. Resource controller actions (index, create, store, show, edit, update, destroy)
+3. Maintenance log creation and validation
+4. Schedule management (create, validate, hard delete)
+5. Schedule-driven next_due_at recalculation
+6. MaintenanceSchedule model scopes and boolean helpers (no HTTP; direct model assertions)
 
 ---
 
-## 2. Files to Create
+## 2. Files to Modify
 
 | Action | Path |
 |--------|------|
-| Create | `resources/js/Pages/Suppliers/Index.jsx` |
-| Create | `resources/js/Pages/Suppliers/Show.jsx` |
-| Create | `resources/js/Pages/Suppliers/Create.jsx` |
-| Create | `resources/js/Pages/Suppliers/Edit.jsx` |
+| Full replacement | `tests/Feature/ToolControllerTest.php` |
 
-No existing files are modified. No backend files are in scope for this task. The task spec
-explicitly states these are new frontend-only files and that no backend stubs exist for
-suppliers yet — meaning the SupplierController and routes must be provided by a separate
-backend task. The plan assumes those routes will be registered as a standard Laravel resource
-at `Route::resource('suppliers', SupplierController::class)` inside the `auth`+`verified`
-middleware group, matching the naming convention of `projects` and `materials`.
+No other files are modified by this task.
 
 ---
 
-## 3. Named Routes Assumed
+## 3. Dependencies on Prior Tasks
 
-The following named routes are assumed to exist (registered by the backend task):
+TASK-07 tests the code produced by three backend tasks. The table below lists what each
+dependency provides and which tests rely on it.
 
-| Named Route | Method | URI |
-|-------------|--------|-----|
-| `suppliers.index` | GET | `/suppliers` |
-| `suppliers.create` | GET | `/suppliers/create` |
-| `suppliers.store` | POST | `/suppliers` |
-| `suppliers.show` | GET | `/suppliers/{supplier}` |
-| `suppliers.edit` | GET | `/suppliers/{supplier}/edit` |
-| `suppliers.update` | PUT/PATCH | `/suppliers/{supplier}` |
-| `suppliers.destroy` | DELETE | `/suppliers/{supplier}` |
-
-Route model binding key for `{supplier}` is the ULID (primary key), consistent with the
-convention used by `materials` and `tools`. The `route()` helper is used throughout for all
-URL generation — no hardcoded strings.
+| Dependency | What It Provides | Tests That Rely On It |
+|------------|-----------------|----------------------|
+| TASK-01 | ToolController: index, create, store, show, edit, update, destroy; destroy route registered | All controller action tests |
+| TASK-02 | ToolController: logMaintenance, storeSchedule, destroySchedule; schedule sub-resource routes; StoreMaintenanceScheduleRequest | Log maintenance tests; schedule CRUD tests |
+| TASK-03 | MaintenanceSchedule: scopeOverdue, scopeDueSoon, isOverdue(), isDueSoon(), is_overdue/is_due_soon accessors | Model scope tests |
 
 ---
 
-## 4. Page Specifications
+## 4. Route Reference
 
-### 4.1 `Suppliers/Index.jsx`
+All routes exercised by the tests, with the HTTP method and URI each test will hit:
 
-**Props:** `{ suppliers, filters }`
-- `suppliers` — Laravel paginator object with `data`, `links.prev`, `links.next`,
-  `current_page`, `last_page`, `total`
-- `filters` — `{ search: string|null }`
-
-**Imports:**
-```jsx
-import { useState, useRef, useCallback } from 'react';
-import { Link, Head, router } from '@inertiajs/react';
-import AppLayout from '@/Layouts/AppLayout';
-import Button from '@/Components/ui/Button';
-import Input from '@/Components/ui/Input';
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/Components/ui/Table';
-```
-
-**Page header:**
-- `<h1>` "Suppliers" with a sub-line showing `suppliers.total` count
-- `<Link href={route('suppliers.create')}><Button variant="default" size="md">+ New Supplier</Button></Link>` aligned right
-
-**Search bar:**
-- Single `<Input type="search" placeholder="Search suppliers..." />` wired to a debounced
-  handler (300 ms `setTimeout`, cleared on each keystroke via `useRef`)
-- On settle: `router.get(route('suppliers.index'), { search: value || undefined }, { preserveState: true, replace: true })`
-- `defaultValue={filters?.search ?? ''}` — uncontrolled input so the cursor position is not
-  reset mid-typing (same pattern as Projects/Index)
-
-**Table columns:** Name | Contact | Email | Phone | Actions
-- Name column: `<Link href={route('suppliers.show', supplier.id)}>` wrapping the name text,
-  styled `text-amber-700 hover:text-amber-900 hover:underline`
-- Email: plain text (not a mailto link — this is the list view, not the detail view)
-- Phone: plain text
-- Actions: "Edit" link to `route('suppliers.edit', supplier.id)`
-
-**Empty state:** When `suppliers.data.length === 0`, a single `<TableRow>` spanning all 5
-columns displays "No suppliers found."
-
-**Pagination:**
-```jsx
-const prevLink = suppliers.links?.prev;
-const nextLink = suppliers.links?.next;
-```
-Render prev/next as active `<Link>` or disabled `<span>` using the same pattern as
-Projects/Index. Show "Page X of Y (Z total)" label to the left.
-
-**Component structure:** Single default export `SuppliersIndex`. No sub-components extracted
-(simpler than Projects/Index which had FilterBar, ProjectsTable, BoardView, etc.).
+| Named Route | Method | URI | Tests Using It |
+|-------------|--------|-----|----------------|
+| `tools.index` | GET | `/tools` | guest_is_redirected, view_tools_index, index_filters_by_category, index_search_returns_tools |
+| `tools.create` | GET | `/tools/create` | create_page_returns_categories_and_maintenance_types |
+| `tools.store` | POST | `/tools` | store_creates_tool, store_requires_name, store_rejects_invalid_category_id, store_rejects_invalid_manual_url |
+| `tools.show` | GET | `/tools/{tool}` | show_returns_tool_with_maintenance_data |
+| `tools.edit` | GET | `/tools/{tool}/edit` | edit_returns_tool_with_categories |
+| `tools.update` | PATCH | `/tools/{tool}` | update_saves_changes, update_with_invalid_purchase_price |
+| `tools.destroy` | DELETE | `/tools/{tool}` | destroy_soft_deletes_tool |
+| `tools.log-maintenance` | POST | `/tools/{tool}/maintenance` | log_maintenance_creates_log_entry, log_maintenance_requires_* (3 tests), log_maintenance_updates_schedule_next_due_at |
+| `tools.schedules.store` | POST | `/tools/{tool}/schedules` | store_schedule_creates_maintenance_schedule, store_schedule_requires_task, store_schedule_requires_at_least_one_interval |
+| `tools.schedules.destroy` | DELETE | `/tools/{tool}/schedules/{schedule}` | destroy_schedule_hard_deletes_schedule |
 
 ---
 
-### 4.2 `Suppliers/Create.jsx`
+## 5. Complete Test Inventory (25 tests)
 
-**Props:** none (empty object from controller)
+### 5.1 Auth / Access (1 test)
 
-**Imports:**
-```jsx
-import AppLayout from '@/Layouts/AppLayout';
-import { useForm, Head, Link } from '@inertiajs/react';
-import Button from '@/Components/ui/Button';
-import Input from '@/Components/ui/Input';
-import Label from '@/Components/ui/Label';
-import Textarea from '@/Components/ui/Textarea';
-import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/Components/ui/Card';
-```
-
-**Form state:**
-```jsx
-const form = useForm({
-    name: '',
-    contact_name: '',
-    email: '',
-    phone: '',
-    website: '',
-    address: '',
-    notes: '',
-});
-```
-
-**Submit handler:**
-```jsx
-function handleSubmit(e) {
-    e.preventDefault();
-    form.post(route('suppliers.store'));
-}
-```
-
-**Layout:** Single `<Card>` wrapping all 7 fields in a `<CardContent className="space-y-4">`.
-CardFooter holds the Submit + Cancel buttons.
-
-**Fields:**
-
-| Field | Input type | UI primitive | Required | Notes |
-|-------|-----------|-------------|----------|-------|
-| `name` | text | `Input` | Yes — red asterisk in label | `autoFocus` |
-| `contact_name` | text | `Input` | No | — |
-| `email` | email | `Input` | No | — |
-| `phone` | tel | `Input` | No | — |
-| `website` | url | `Input` | No | `placeholder="https://..."` |
-| `address` | — | `Textarea` | No | `rows={3}` |
-| `notes` | — | `Textarea` | No | `rows={4}` |
-
-Each field follows the Projects/Create field structure:
-```jsx
-<div>
-    <Label htmlFor="name">Name <span className="text-red-500">*</span></Label>
-    <div className="mt-1">
-        <Input id="name" type="text" value={form.data.name}
-            onChange={e => form.setData('name', e.target.value)}
-            error={!!form.errors.name} autoFocus />
-        {form.errors.name && (
-            <p className="mt-1 text-sm text-red-600">{form.errors.name}</p>
-        )}
-    </div>
-</div>
-```
-
-**Page header:** `<h1>` "New Supplier" + sub-text "Fill in the details to add a new supplier."
-
-**Cancel button:** `<Link href={route('suppliers.index')}>` styled with the same secondary
-gray inline style used in Projects/Create (not a Button variant, a styled `<Link>` to avoid
-double button-type nesting):
-```jsx
-className="inline-flex items-center justify-center rounded-md border border-transparent bg-gray-200 px-4 py-2 text-sm font-medium text-gray-900 transition-colors duration-150 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
-```
-
-**Submit button:** `<Button type="submit" loading={form.processing} disabled={form.processing}>Save Supplier</Button>`
+**`guest_is_redirected_from_tools`**
+- Request: `$this->get('/tools')` (no actingAs)
+- Assert: `assertRedirect('/login')`
+- Rationale: confirms the `auth` + `verified` middleware is on the tools route group
 
 ---
 
-### 4.3 `Suppliers/Edit.jsx`
+### 5.2 Index (3 tests)
 
-**Props:** `{ supplier }`
+**`authenticated_user_can_view_tools_index`**
+- Request: `$this->actingAs($this->user)->get('/tools')`
+- Assert: `assertOk()`
+- Assert: `assertInertia(fn ($page) => $page->component('Tools/Index')->has('tools')->has('filters')->has('categories'))`
+- Rationale: verifies the three required props are passed (from TASK-01 controller spec)
 
-**Imports:** identical to Create.jsx
+**`index_filters_by_category`**
+- Setup: `ToolCategory::factory()->create()` twice (categoryA, categoryB); `Tool::factory()->create(['category_id' => $categoryA->id])` and one for categoryB
+- Request: `$this->actingAs($this->user)->get('/tools?category=' . $categoryA->id)`
+- Assert: `assertOk()`
+- Assert: `assertInertia(fn ($page) => $page->has('tools.data', 1))`
+- Rationale: the `when()` filter on `category_id` must narrow the paginated result to exactly one record
 
-**Form state:** pre-populated with `?? ''` defaults:
-```jsx
-const form = useForm({
-    name: supplier.name ?? '',
-    contact_name: supplier.contact_name ?? '',
-    email: supplier.email ?? '',
-    phone: supplier.phone ?? '',
-    website: supplier.website ?? '',
-    address: supplier.address ?? '',
-    notes: supplier.notes ?? '',
-});
-```
-
-**Submit handler:**
-```jsx
-function handleSubmit(e) {
-    e.preventDefault();
-    form.patch(route('suppliers.update', supplier.id));
-}
-```
-
-**Layout:** Identical single-card layout to Create. All 7 fields with identical structure.
-`autoFocus` on the name field.
-
-**Page header:** `<h1>` "Edit Supplier" + sub-text "Update the details for {supplier.name}."
-```jsx
-<Head title={`Edit: ${supplier.name}`} />
-```
-
-**Cancel button:** `<Link href={route('suppliers.show', supplier.id)}>` (goes to Show, not
-Index — per spec).
+**`index_search_returns_tools`**
+- Setup: `Tool::factory()->create(['name' => 'UniqueToolName99999'])`
+- Request: `$this->actingAs($this->user)->get('/tools?search=UniqueToolName99999')`
+- Assert: `assertOk()`
+- Rationale: confirms the Scout database driver executes without error; Scout integration is lightweight so we check status only (same approach as MaterialControllerTest)
 
 ---
 
-### 4.4 `Suppliers/Show.jsx`
+### 5.3 Create (1 test)
 
-**Props:** `{ supplier }` where `supplier` includes `materials_count` from `withCount('materials')`
-on the controller.
-
-**Imports:**
-```jsx
-import AppLayout from '@/Layouts/AppLayout';
-import { Head, Link, router, usePage } from '@inertiajs/react';
-import Button from '@/Components/ui/Button';
-import { Card, CardHeader, CardTitle, CardContent } from '@/Components/ui/Card';
-import Alert from '@/Components/ui/Alert';
-```
-
-**Flash messages:** read from `usePage().props.flash`, rendered before the page header:
-```jsx
-const { flash } = usePage().props;
-// ...
-{flash?.success && <Alert variant="success">{flash.success}</Alert>}
-{flash?.error   && <Alert variant="error">{flash.error}</Alert>}
-{flash?.warning && <Alert variant="warning">{flash.warning}</Alert>}
-{flash?.info    && <Alert variant="info">{flash.info}</Alert>}
-```
-
-**Page header:**
-- Left: `<h1>` with `supplier.name`
-- Right: Edit button + Delete button
-```jsx
-<Link href={route('suppliers.edit', supplier.id)}>
-    <Button variant="outline" size="sm">Edit</Button>
-</Link>
-<Button variant="destructive" size="sm" onClick={handleDelete}>Delete</Button>
-```
-
-**Delete handler:**
-```jsx
-function handleDelete() {
-    if (!confirm('Delete this supplier? This cannot be undone.')) return;
-    router.delete(route('suppliers.destroy', supplier.id));
-}
-```
-Redirects to `suppliers.index` (handled by the controller with flash success message).
-This is a hard delete — no soft-delete is applied to suppliers per the project spec
-("Soft deletes on: projects, materials, tools. Hard delete everything else.").
-
-**Detail card:** A single `<Card>` with a two-column definition grid (same `<dl>` pattern
-used in Projects/Show overview section):
-
-```jsx
-<div className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">
-    <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">Name</dt>
-    <dd className="mt-1 text-sm text-gray-800">{supplier.name}</dd>
-    ...
-</div>
-```
-
-Field layout within the card:
-
-| Field | Display | Column span | Special |
-|-------|---------|-------------|---------|
-| Name | plain text | 1 col | — |
-| Contact Name | plain text or `—` | 1 col | — |
-| Email | `<a href="mailto:...">` or `—` | 1 col | amber link style |
-| Phone | plain text or `—` | 1 col | — |
-| Website | `<a href="..." target="_blank" rel="noopener noreferrer">` or `—` | 1 col | truncated display |
-| Address | `whitespace-pre-wrap` or `—` | 2 cols (full width) | — |
-| Notes | `whitespace-pre-wrap` or `—` | 2 cols (full width) | — |
-
-Email link styling: `className="text-amber-700 hover:text-amber-900 hover:underline"`
-Website link display: show the URL text, or a cleaned version (no need to strip protocol —
-keep it simple).
-
-For optional fields that may be null or empty string, display `—` (em-dash) as the fallback:
-```jsx
-{supplier.email ? <a href={`mailto:${supplier.email}`} ...>{supplier.email}</a> : '—'}
-```
-
-**Materials count callout:** Rendered below the detail card as a small info card or styled
-`<p>`:
-```jsx
-<div className="rounded-lg border border-gray-200 bg-gray-50 px-6 py-4">
-    <p className="text-sm text-gray-600">
-        <span className="font-semibold text-gray-900">{supplier.materials_count}</span>{' '}
-        {supplier.materials_count === 1 ? 'material' : 'materials'} sourced from this supplier.
-    </p>
-</div>
-```
+**`create_page_returns_categories_and_maintenance_types`**
+- Request: `$this->actingAs($this->user)->get('/tools/create')`
+- Assert: `assertOk()`
+- Assert: `assertInertia(fn ($page) => $page->component('Tools/Create')->has('categories')->has('maintenanceTypes'))`
+- Rationale: create page must supply both lookup datasets to the frontend form (from TASK-01 create spec)
 
 ---
 
-## 5. Decisions and Rationale
+### 5.4 Store (4 tests)
 
-### Decision 1: Use `supplier.id` (ULID) as route parameter, not a slug
+**`store_creates_tool_and_redirects_to_show`**
+- Request: `$this->actingAs($this->user)->post('/tools', ['name' => 'Test Tool'])`
+- Assert: `assertDatabaseHas('tools', ['name' => 'Test Tool'])`
+- Assert: `assertRedirect(route('tools.show', Tool::where('name', 'Test Tool')->first()))`
+- Rationale: happy path — minimum valid payload (name only); confirms record creation and correct redirect
 
-Suppliers have no `slug` field. The `Supplier` model uses `HasUlids` which sets `id` as the
-primary key ULID. The convention in this project for non-project models is to use the ULID
-for route binding (see `materials/{material}`, `tools/{tool}`). Therefore all `route()` calls
-use `supplier.id`.
+**`store_requires_name`**
+- Request: `$this->actingAs($this->user)->post('/tools', [])` (empty body)
+- Assert: `assertSessionHasErrors(['name'])`
+- Rationale: StoreToolRequest has `name` as `required`
 
-### Decision 2: Single card for the form, not multi-card sections
+**`store_rejects_invalid_category_id`**
+- Request: post with `['name' => 'Test Tool', 'category_id' => 'not-a-valid-ulid']`
+- Assert: `assertSessionHasErrors(['category_id'])`
+- Rationale: StoreToolRequest validates `category_id` as `ulid` + `Rule::exists('tool_categories', 'id')`; a non-ULID string should fail the `ulid` rule before `exists` is even evaluated
 
-Projects/Create uses multiple cards (Basic Info, Pricing & Time, Commission, Notes) because
-it has 13 fields across 4 logical groups. Suppliers have 7 fields with no natural groupings
-beyond "supplier details." A single card avoids unnecessary visual fragmentation.
+**`store_rejects_invalid_manual_url`**
+- Request: post with `['name' => 'Test Tool', 'manual_url' => 'not-a-url']`
+- Assert: `assertSessionHasErrors(['manual_url'])`
+- Rationale: StoreToolRequest validates `manual_url` as `url`
 
-### Decision 3: No controlled input for the search field (use `defaultValue`)
+---
 
-Using `defaultValue` (uncontrolled) instead of `value` (controlled) on the search input
-prevents React from resetting the cursor to the end of the input on every keystroke during
-the debounce interval. This matches the Projects/Index pattern. The `filters.search` value
-from props is used only to set the initial value; thereafter the DOM owns the field state.
+### 5.5 Show (1 test)
 
-### Decision 4: Delete uses `window.confirm`, not a modal
+**`show_returns_tool_with_maintenance_data`**
+- Setup: `Tool::factory()->create()`
+- Request: `$this->actingAs($this->user)->get('/tools/' . $tool->id)`
+- Assert: `assertOk()`
+- Assert: `assertInertia(fn ($page) => $page->component('Tools/Show')->has('tool')->has('maintenanceTypes'))`
+- Rationale: show must return both props; maintenanceTypes powers the log form on the frontend
 
-The task spec says "confirm + router.delete". Using `window.confirm` is consistent with
-Projects/Show and avoids importing `Modal`. The Supplier entity is simpler than a Project
-and the one-liner confirm dialog is sufficient UX for a solo-user tool.
+---
 
-### Decision 5: Email and Website as styled anchor elements, not plain text
+### 5.6 Edit (1 test)
 
-The Show page spec explicitly calls for `mailto:` and `href` links on the email and website
-fields. In the Index table, email is shown as plain text (sorting/scanning priority). On
-Show, the user is likely to want to click through, so anchor elements are appropriate there.
+**`edit_returns_tool_with_categories`**
+- Setup: `Tool::factory()->create()`
+- Request: `$this->actingAs($this->user)->get('/tools/' . $tool->id . '/edit')`
+- Assert: `assertOk()`
+- Assert: `assertInertia(fn ($page) => $page->component('Tools/Edit')->has('tool')->has('categories'))`
+- Rationale: edit form needs the existing tool data and the categories lookup for the select field
 
-### Decision 6: `materials_count` loaded via `withCount` on the controller
+---
 
-The Show props contract specifies `supplier` with `materials_count` from `loadCount`. In
-Laravel, this means the controller calls:
+### 5.7 Update (2 tests)
+
+**`update_saves_changes_and_redirects_to_show`**
+- Setup: `Tool::factory()->create(['name' => 'Original Name'])`
+- Request: `$this->actingAs($this->user)->patch('/tools/' . $tool->id, ['name' => 'Updated Name'])`
+- Assert: `assertDatabaseHas('tools', ['id' => $tool->id, 'name' => 'Updated Name'])`
+- Assert: `assertRedirect(route('tools.show', $tool))`
+- Rationale: happy path update; `sometimes` prefixed rules allow partial updates
+
+**`update_with_invalid_purchase_price_returns_error`**
+- Setup: `Tool::factory()->create()`
+- Request: `$this->actingAs($this->user)->patch('/tools/' . $tool->id, ['purchase_price' => 'not-a-number'])`
+- Assert: `assertSessionHasErrors(['purchase_price'])`
+- Rationale: UpdateToolRequest validates `purchase_price` as `numeric`; arbitrary strings must fail
+
+---
+
+### 5.8 Destroy (1 test)
+
+**`destroy_soft_deletes_tool`**
+- Setup: `Tool::factory()->create()`
+- Request: `$this->actingAs($this->user)->delete('/tools/' . $tool->id)`
+- Assert: `assertRedirect(route('tools.index'))`
+- Assert: `assertSoftDeleted('tools', ['id' => $tool->id])`
+- Rationale: Tool uses `SoftDeletes`; the record must remain in the table with a non-null `deleted_at`; route is registered after TASK-01 removes `.except(['destroy'])`
+
+---
+
+### 5.9 Log Maintenance (5 tests)
+
+**`log_maintenance_creates_log_entry`**
+- Setup: `Tool::factory()->create()`
+- Request: post to `/tools/{tool->id}/maintenance` with:
+  ```
+  maintenance_type = 'cleaning'
+  description      = 'Test maintenance'
+  performed_at     = '2026-03-01'
+  ```
+- Assert: `assertDatabaseHas('maintenance_logs', ['tool_id' => $tool->id, 'description' => 'Test maintenance'])`
+- Assert: `assertRedirect(route('tools.show', $tool))`
+- Rationale: happy path — confirms log row is created and controller redirects correctly
+
+**`log_maintenance_requires_maintenance_type`**
+- Setup: `Tool::factory()->create()`
+- Request: post without `maintenance_type` (description and performed_at present)
+- Assert: `assertSessionHasErrors(['maintenance_type'])`
+- Rationale: LogMaintenanceRequest has `maintenance_type` as `required` with `Rule::enum(MaintenanceType::class)`
+
+**`log_maintenance_requires_description`**
+- Setup: `Tool::factory()->create()`
+- Request: post without `description` (maintenance_type and performed_at present)
+- Assert: `assertSessionHasErrors(['description'])`
+- Rationale: LogMaintenanceRequest has `description` as `required`
+
+**`log_maintenance_requires_performed_at`**
+- Setup: `Tool::factory()->create()`
+- Request: post without `performed_at` (maintenance_type and description present)
+- Assert: `assertSessionHasErrors(['performed_at'])`
+- Rationale: LogMaintenanceRequest has `performed_at` as `required`
+
+**`log_maintenance_updates_schedule_next_due_at`**
+- Setup:
+  ```php
+  $tool = Tool::factory()->create();
+  $schedule = MaintenanceSchedule::factory()->create([
+      'tool_id'       => $tool->id,
+      'interval_days' => 30,
+      'next_due_at'   => null,
+  ]);
+  ```
+- Request: post to `/tools/{tool->id}/maintenance` with:
+  ```
+  maintenance_type = 'cleaning'
+  description      = 'Scheduled cleaning'
+  performed_at     = '2026-03-01'
+  schedule_id      = {schedule->id}
+  ```
+- Assert: reload schedule from DB (`$schedule->fresh()`)
+- Assert: `$schedule->last_performed_at->toDateString() === '2026-03-01'`
+- Assert: `$schedule->next_due_at->toDateString() === '2026-03-31'` (30 days after performed_at)
+- Rationale: the logMaintenance controller method must update the linked schedule's `last_performed_at` and recompute `next_due_at` using `interval_days`
+
+---
+
+### 5.10 Schedule Management (4 tests)
+
+**`store_schedule_creates_maintenance_schedule`**
+- Setup: `Tool::factory()->create()`
+- Request: post to `/tools/{tool->id}/schedules` with:
+  ```
+  maintenance_type = 'cleaning'
+  task             = 'Sharpen blade'
+  interval_days    = 30
+  ```
+- Assert: `assertDatabaseHas('maintenance_schedules', ['tool_id' => $tool->id, 'task' => 'Sharpen blade'])`
+- Assert: `assertRedirect(route('tools.show', $tool))`
+- Rationale: happy path schedule creation
+
+**`store_schedule_requires_task`**
+- Setup: `Tool::factory()->create()`
+- Request: post to `/tools/{tool->id}/schedules` without `task` field (maintenance_type and interval_days present)
+- Assert: `assertSessionHasErrors(['task'])`
+- Rationale: StoreMaintenanceScheduleRequest validates `task` as `required`
+
+**`store_schedule_requires_at_least_one_interval`**
+- Setup: `Tool::factory()->create()`
+- Request: post to `/tools/{tool->id}/schedules` with:
+  ```
+  maintenance_type = 'cleaning'
+  task             = 'Some task'
+  ```
+  (no `interval_days`, no `interval_hours`)
+- Assert: `assertSessionHasErrors(['interval_days'])`
+- Rationale: StoreMaintenanceScheduleRequest uses `withValidator` to add an `after` rule that requires at least one interval; the error key added is `interval_days`
+
+**`destroy_schedule_hard_deletes_schedule`**
+- Setup: `$tool = Tool::factory()->create()`, then `$schedule = MaintenanceSchedule::factory()->create(['tool_id' => $tool->id])`
+- Request: `$this->actingAs($this->user)->delete('/tools/' . $tool->id . '/schedules/' . $schedule->id)`
+- Assert: `assertDatabaseMissing('maintenance_schedules', ['id' => $schedule->id])`
+- Assert: `assertRedirect(route('tools.show', $tool))`
+- Rationale: MaintenanceSchedule has no SoftDeletes; per CLAUDE.md "hard delete everything else"; uses `assertDatabaseMissing` (not `assertSoftDeleted`)
+
+---
+
+### 5.11 MaintenanceSchedule Model Scopes (4 tests)
+
+These tests make no HTTP requests. They create model instances directly and assert scope query results and boolean helper return values.
+
+**`overdue_scope_returns_schedules_with_past_next_due_at`**
+- Setup:
+  ```php
+  MaintenanceSchedule::factory()->create(['next_due_at' => now()->subDay()]);   // overdue
+  MaintenanceSchedule::factory()->create(['next_due_at' => now()->addDays(14)]); // future, not overdue
+  MaintenanceSchedule::factory()->create(['next_due_at' => null]);               // excluded
+  ```
+- Assert: `MaintenanceSchedule::overdue()->count() === 1`
+- Rationale: scopeOverdue must filter on `next_due_at < now()` and exclude nulls
+
+**`due_soon_scope_returns_schedules_within_seven_days`**
+- Setup:
+  ```php
+  MaintenanceSchedule::factory()->create(['next_due_at' => now()->addDays(3)]);  // due soon
+  MaintenanceSchedule::factory()->create(['next_due_at' => now()->addDays(14)]); // too far out
+  MaintenanceSchedule::factory()->create(['next_due_at' => now()->subDay()]);    // overdue
+  MaintenanceSchedule::factory()->create(['next_due_at' => null]);               // excluded
+  ```
+- Assert: `MaintenanceSchedule::dueSoon()->count() === 1`
+- Rationale: scopeDueSoon must bound both sides: `next_due_at >= now()` AND `next_due_at <= now()->addDays(7)`
+
+**`is_overdue_returns_correct_boolean`**
+- Setup: `$schedule = MaintenanceSchedule::factory()->create()`; manually assign `next_due_at`; call `$schedule->isOverdue()`
+- Assertions:
+  - `next_due_at = now()->subDay()` → `isOverdue() === true`
+  - `next_due_at = now()->addDay()` → `isOverdue() === false`
+  - `next_due_at = null` → `isOverdue() === false`
+- Rationale: the `next_due_at` cast is `datetime`, so `isPast()` works directly; null guard must return false
+
+**`is_due_soon_returns_correct_boolean`**
+- Setup: same pattern; manually assign `next_due_at` and call `$schedule->isDueSoon()`
+- Assertions:
+  - `next_due_at = now()->addDays(3)` → `isDueSoon() === true`
+  - `next_due_at = now()->addDays(14)` → `isDueSoon() === false`
+  - `next_due_at = now()->subDay()` → `isDueSoon() === false` (overdue, not due soon)
+  - `next_due_at = null` → `isDueSoon() === false`
+- Rationale: isDueSoon() must combine the `!isPast()` guard and the `lte(now()->addDays(7))` check
+
+---
+
+## 6. Test Class Skeleton
+
 ```php
-$supplier->loadCount('materials');
+<?php
+
+namespace Tests\Feature;
+
+use App\Enums\MaintenanceType;
+use App\Models\MaintenanceSchedule;
+use App\Models\Tool;
+use App\Models\ToolCategory;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+
+class ToolControllerTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private User $user;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->user = User::factory()->create();
+    }
+
+    // ── Auth ─────────────────────────────────────────────────────────────────
+
+    #[Test]
+    public function guest_is_redirected_from_tools(): void { ... }
+
+    // ── Index ─────────────────────────────────────────────────────────────────
+
+    #[Test]
+    public function authenticated_user_can_view_tools_index(): void { ... }
+
+    #[Test]
+    public function index_filters_by_category(): void { ... }
+
+    #[Test]
+    public function index_search_returns_tools(): void { ... }
+
+    // ── Create ────────────────────────────────────────────────────────────────
+
+    #[Test]
+    public function create_page_returns_categories_and_maintenance_types(): void { ... }
+
+    // ── Store ─────────────────────────────────────────────────────────────────
+
+    #[Test]
+    public function store_creates_tool_and_redirects_to_show(): void { ... }
+
+    #[Test]
+    public function store_requires_name(): void { ... }
+
+    #[Test]
+    public function store_rejects_invalid_category_id(): void { ... }
+
+    #[Test]
+    public function store_rejects_invalid_manual_url(): void { ... }
+
+    // ── Show ──────────────────────────────────────────────────────────────────
+
+    #[Test]
+    public function show_returns_tool_with_maintenance_data(): void { ... }
+
+    // ── Edit ──────────────────────────────────────────────────────────────────
+
+    #[Test]
+    public function edit_returns_tool_with_categories(): void { ... }
+
+    // ── Update ────────────────────────────────────────────────────────────────
+
+    #[Test]
+    public function update_saves_changes_and_redirects_to_show(): void { ... }
+
+    #[Test]
+    public function update_with_invalid_purchase_price_returns_error(): void { ... }
+
+    // ── Destroy ───────────────────────────────────────────────────────────────
+
+    #[Test]
+    public function destroy_soft_deletes_tool(): void { ... }
+
+    // ── Log Maintenance ───────────────────────────────────────────────────────
+
+    #[Test]
+    public function log_maintenance_creates_log_entry(): void { ... }
+
+    #[Test]
+    public function log_maintenance_requires_maintenance_type(): void { ... }
+
+    #[Test]
+    public function log_maintenance_requires_description(): void { ... }
+
+    #[Test]
+    public function log_maintenance_requires_performed_at(): void { ... }
+
+    #[Test]
+    public function log_maintenance_updates_schedule_next_due_at(): void { ... }
+
+    // ── Schedule Management ───────────────────────────────────────────────────
+
+    #[Test]
+    public function store_schedule_creates_maintenance_schedule(): void { ... }
+
+    #[Test]
+    public function store_schedule_requires_task(): void { ... }
+
+    #[Test]
+    public function store_schedule_requires_at_least_one_interval(): void { ... }
+
+    #[Test]
+    public function destroy_schedule_hard_deletes_schedule(): void { ... }
+
+    // ── MaintenanceSchedule Model Scopes ──────────────────────────────────────
+
+    #[Test]
+    public function overdue_scope_returns_schedules_with_past_next_due_at(): void { ... }
+
+    #[Test]
+    public function due_soon_scope_returns_schedules_within_seven_days(): void { ... }
+
+    #[Test]
+    public function is_overdue_returns_correct_boolean(): void { ... }
+
+    #[Test]
+    public function is_due_soon_returns_correct_boolean(): void { ... }
+}
 ```
-This appends `materials_count` as an attribute on the model before it is serialised by
-Inertia. The frontend simply reads `supplier.materials_count`. The plan does not implement
-the controller (backend task), but the frontend page depends on this attribute being present.
-
-### Decision 7: `address` and `notes` are full-width in the Show detail grid
-
-Address is a multiline text field (up to a full mailing address). Notes are freeform. Both
-use `sm:col-span-2` to span the full two-column grid width and `whitespace-pre-wrap` to
-preserve newlines. This matches the Projects/Show pattern for `description` and `notes`.
 
 ---
 
-## 6. Verified Dependencies
+## 7. Key Implementation Notes
 
-| Dependency | Location | Status |
-|------------|----------|--------|
-| `AppLayout` | `resources/js/Layouts/AppLayout.jsx` | Exists |
-| `Button` (variants: `default`, `outline`, `destructive`) | `resources/js/Components/ui/Button.jsx` | Exists |
-| `Input` (props: `id`, `type`, `value`, `onChange`, `error`, `placeholder`, `autoFocus`) | `resources/js/Components/ui/Input.jsx` | Exists |
-| `Label` | `resources/js/Components/ui/Label.jsx` | Exists |
-| `Textarea` (props: `id`, `value`, `onChange`, `error`, `rows`) | `resources/js/Components/ui/Textarea.jsx` | Exists |
-| `Card`, `CardHeader`, `CardTitle`, `CardContent`, `CardFooter` | `resources/js/Components/ui/Card.jsx` | Exists |
-| `Alert` (variants: `success`, `error`, `warning`, `info`) | `resources/js/Components/ui/Alert.jsx` | Exists |
-| `Table`, `TableHeader`, `TableBody`, `TableRow`, `TableHead`, `TableCell` | `resources/js/Components/ui/Table.jsx` | Exists |
-| `useForm`, `router`, `usePage`, `Head`, `Link` | `@inertiajs/react` | Exists (used in Projects pages) |
-| `Supplier` model with `materials_count` capability | `app/Models/Supplier.php` — `materials()` HasMany exists | Exists |
-| Supplier resource routes (`suppliers.*`) | `routes/web.php` | **NOT YET REGISTERED** — required from backend task |
-| `SupplierController` | `app/Http/Controllers/` | **NOT YET CREATED** — required from backend task |
-| `StoreSupplierRequest` / `UpdateSupplierRequest` | `app/Http/Requests/` | **NOT YET CREATED** — required from backend task |
-| `flash` prop in Inertia shared props | Set by `HandleInertiaRequests` middleware | Assumed present (used in Projects/Show) |
+### 7.1 Destroy route availability
+
+The `tools.destroy` route only exists after TASK-01 removes `.except(['destroy'])` from
+`routes/web.php`. If TASK-07 runs before TASK-01, the destroy test will produce a 405 Method
+Not Allowed rather than a 302 redirect. Run TASK-01 first.
+
+### 7.2 Schedule sub-resource routes
+
+The `tools.schedules.store` and `tools.schedules.destroy` routes only exist after TASK-02
+adds them to `routes/web.php`. The route pattern is:
+```
+POST   /tools/{tool}/schedules                    → tools.schedules.store
+DELETE /tools/{tool}/schedules/{schedule}         → tools.schedules.destroy
+```
+Use these literal URI strings in the test requests if named route helpers are not yet
+available. Prefer `route('tools.schedules.store', $tool->id)` once routes exist.
+
+### 7.3 Model scope tests do not use HTTP
+
+The four scope/helper tests (`overdue_scope_*`, `due_soon_scope_*`, `is_overdue_*`,
+`is_due_soon_*`) create `MaintenanceSchedule` factory instances and call model methods
+directly. They do not exercise any HTTP endpoints. Use `RefreshDatabase` to guarantee a
+clean slate (the trait is on the class, covering all tests).
+
+### 7.4 Date arithmetic in `log_maintenance_updates_schedule_next_due_at`
+
+The `next_due_at` column is cast to `datetime` (Carbon) on `MaintenanceSchedule`. After
+the request, reload the schedule with `$schedule->fresh()`. Compare using
+`->toDateString()` to avoid timezone/time-of-day discrepancies:
+```php
+$this->assertEquals('2026-03-31', $schedule->next_due_at->toDateString());
+```
+
+### 7.5 assertSessionHasErrors for schedule interval validation
+
+`StoreMaintenanceScheduleRequest::withValidator()` adds the cross-field error to the
+`interval_days` key (per TASK-02 spec). Assert:
+```php
+$response->assertSessionHasErrors(['interval_days']);
+```
+
+### 7.6 assertSoftDeleted vs assertDatabaseMissing
+
+| Model | Delete type | Correct assertion |
+|-------|-------------|-------------------|
+| `Tool` | Soft delete (has `deleted_at`) | `assertSoftDeleted('tools', ['id' => $tool->id])` |
+| `MaintenanceSchedule` | Hard delete (no `SoftDeletes`) | `assertDatabaseMissing('maintenance_schedules', ['id' => $schedule->id])` |
+
+### 7.7 MaintenanceType enum values for test payloads
+
+Use a concrete enum value string as the `maintenance_type` payload, not the PHP enum case
+directly. The safe general-purpose value for tests is `'cleaning'`:
+```php
+'maintenance_type' => 'cleaning'
+```
+Alternatively import `MaintenanceType` and use `MaintenanceType::Cleaning->value`.
 
 ---
 
-## 7. Risks
+## 8. Assertion Style Reference
 
-### Risk 1: Supplier routes not yet registered
+```php
+// Inertia component + props
+$response->assertInertia(fn ($page) => $page
+    ->component('Tools/Index')
+    ->has('tools')
+    ->has('filters')
+    ->has('categories')
+);
 
-The `routes/web.php` file does not currently contain any supplier routes. The frontend pages
-use `route('suppliers.index')`, `route('suppliers.store')`, etc. via Ziggy. If the backend
-task has not run before the frontend is tested in the browser, all `route()` calls will throw
-a Ziggy error: "Route [suppliers.index] not found."
+// Inertia paginated count
+$response->assertInertia(fn ($page) => $page
+    ->has('tools.data', 1)
+);
 
-**Mitigation:** The four JSX files can be created and reviewed independently. The implementer
-must ensure the backend task (SupplierController + routes) is completed and `php artisan
-route:cache` (or just a dev server restart) has run before end-to-end browser testing.
+// Redirect to named route
+$response->assertRedirect(route('tools.show', $tool));
+$response->assertRedirect(route('tools.index'));
 
-### Risk 2: `supplier.materials_count` attribute missing if controller omits `withCount`/`loadCount`
+// Validation errors
+$response->assertSessionHasErrors(['name']);
+$response->assertSessionHasErrors(['category_id']);
 
-If the controller does not call `$supplier->loadCount('materials')` before passing the model
-to Inertia, `supplier.materials_count` will be `undefined` on the frontend. The callout will
-then display "undefined materials sourced from this supplier."
-
-**Mitigation:** Guard with nullish coalescing: `{supplier.materials_count ?? 0}`. This keeps
-the UI functional even if the backend omits the count.
-
-### Risk 3: ULID in URL may conflict with slug-based route binding
-
-If the backend task registers the route with a slug key (unlikely given no `slug` field on
-Supplier) rather than the default ULID primary key, the `route('suppliers.show', supplier.id)`
-calls would produce broken URLs. The `Supplier` model uses `HasUlids` with no `getRouteKeyName`
-override, so the default binding resolves by `id` (the ULID). No action needed, but the
-backend task must not add a custom `getRouteKeyName`.
-
-### Risk 4: `Textarea` component `error` prop styling
-
-The `Textarea` component is used in forms with `error={!!form.errors.field}`. This assumes
-`Textarea.jsx` accepts an `error` boolean prop and applies a red border class. If the
-component does not support this prop, validation error styling will silently fail (no red
-border, but the error text paragraph will still render). Verify `Textarea.jsx` supports the
-`error` prop before implementation.
+// DB assertions
+$this->assertDatabaseHas('tools', ['name' => 'Test Tool']);
+$this->assertSoftDeleted('tools', ['id' => $tool->id]);
+$this->assertDatabaseMissing('maintenance_schedules', ['id' => $schedule->id]);
+```
 
 ---
 
-## 8. Acceptance Criteria Coverage
+## 9. Acceptance Criteria Coverage
 
-| Criterion | Implementation |
-|-----------|---------------|
-| `Index.jsx` exists with header "Suppliers" + count + "+ New Supplier" button | Section 4.1 page header |
-| Search input debounced 300ms | Section 4.1 search bar, `useRef`-based debounce |
-| `router.get('/suppliers', params, { preserveState, replace })` | Section 4.1 search navigate call |
-| Table with Name, Contact, Email, Phone, Actions columns | Section 4.1 table columns |
-| Pagination prev/next | Section 4.1 pagination |
-| Empty state | Section 4.1 empty state row |
-| `Create.jsx` and `Edit.jsx` single-card form with 7 fields | Section 4.2 / 4.3 field table |
-| `name` field required (red asterisk) | Section 4.2 field table |
-| `website` placeholder "https://..." | Section 4.2 field table |
-| `address` Textarea rows=3, `notes` Textarea rows=4 | Section 4.2 field table |
-| Create submits `form.post(route('suppliers.store'))` | Section 4.2 submit handler |
-| Create Cancel goes to `suppliers.index` | Section 4.2 cancel button |
-| Edit submits `form.patch(route('suppliers.update', supplier.id))` | Section 4.3 submit handler |
-| Edit Cancel goes to `suppliers.show` | Section 4.3 cancel button |
-| Edit pre-populates all fields with `?? ''` | Section 4.3 form state |
-| `Show.jsx` header with name, Edit + Delete buttons | Section 4.4 page header |
-| Delete uses `confirm` + `router.delete` (hard delete) | Section 4.4 delete handler + Decision 4 |
-| Flash messages via `usePage().props.flash` with all 4 variants | Section 4.4 flash messages |
-| Detail card two-column layout | Section 4.4 detail card |
-| Email renders as `mailto:` link | Section 4.4 field layout table |
-| Website renders as `href` link with `target="_blank"` | Section 4.4 field layout table |
-| Address and Notes are full-width with `whitespace-pre-wrap` | Section 4.4 field layout table + Decision 7 |
-| `materials_count` callout | Section 4.4 materials count callout |
-| JSX file extensions (not TSX) | All four files are `.jsx` |
-| `AppLayout` wrapper on every page | All four page components wrap in `<AppLayout>` |
-| No hardcoded URLs — all use `route()` helper | Decision 1, all sections |
+| Criterion (from task manifest) | Covered By |
+|-------------------------------|------------|
+| Auth: guest_is_redirected_from_tools | Section 5.1 |
+| Index: view index (3 props) | Section 5.2 — authenticated_user_can_view_tools_index |
+| Index: filter by category | Section 5.2 — index_filters_by_category |
+| Index: search | Section 5.2 — index_search_returns_tools |
+| Create: returns categories + maintenance types | Section 5.3 |
+| Store: creates tool + redirect | Section 5.4 — store_creates_tool_and_redirects_to_show |
+| Store: requires name | Section 5.4 — store_requires_name |
+| Store: rejects invalid category_id | Section 5.4 — store_rejects_invalid_category_id |
+| Store: rejects invalid manual_url | Section 5.4 — store_rejects_invalid_manual_url |
+| Show: returns tool with maintenance data | Section 5.5 |
+| Edit: returns tool with categories | Section 5.6 |
+| Update: saves changes + redirect | Section 5.7 — update_saves_changes_and_redirects_to_show |
+| Update: rejects invalid purchase_price | Section 5.7 — update_with_invalid_purchase_price_returns_error |
+| Destroy: soft deletes tool | Section 5.8 |
+| Log Maintenance: creates log entry | Section 5.9 — log_maintenance_creates_log_entry |
+| Log Maintenance: requires maintenance_type | Section 5.9 — log_maintenance_requires_maintenance_type |
+| Log Maintenance: requires description | Section 5.9 — log_maintenance_requires_description |
+| Log Maintenance: requires performed_at | Section 5.9 — log_maintenance_requires_performed_at |
+| Log Maintenance: updates schedule next_due_at | Section 5.9 — log_maintenance_updates_schedule_next_due_at |
+| Schedule: store creates schedule | Section 5.10 — store_schedule_creates_maintenance_schedule |
+| Schedule: requires task | Section 5.10 — store_schedule_requires_task |
+| Schedule: requires at least one interval | Section 5.10 — store_schedule_requires_at_least_one_interval |
+| Schedule: destroy hard-deletes | Section 5.10 — destroy_schedule_hard_deletes_schedule |
+| Model Scopes: overdue scope | Section 5.11 — overdue_scope_returns_schedules_with_past_next_due_at |
+| Model Scopes: due_soon scope | Section 5.11 — due_soon_scope_returns_schedules_within_seven_days |
+| Model Scopes: isOverdue boolean | Section 5.11 — is_overdue_returns_correct_boolean |
+| Model Scopes: isDueSoon boolean | Section 5.11 — is_due_soon_returns_correct_boolean |
+
+**Total tests: 25** — all required tests from the task manifest are covered.
+
+---
+
+## 10. Running the Tests
+
+```bash
+./vendor/bin/sail artisan test --filter=ToolControllerTest
+```
+
+All 25 tests must pass. No tests from other test files may be broken by this task (the only
+file modified is `tests/Feature/ToolControllerTest.php`).

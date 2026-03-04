@@ -1,4 +1,4 @@
-# TASK-01: MaterialController CRUD Implementation Plan
+# TASK-01: ToolController CRUD Implementation Plan
 
 **Task ID:** TASK-01
 **Domain:** backend
@@ -9,12 +9,14 @@
 
 ## 1. Approach
 
-Replace all stub methods in `MaterialController` with working implementations and expose the `destroy` route. All methods follow the established project conventions: fat models, thin controllers, form-request validation, Scout search, and Inertia responses.
+Replace all 7 stub methods in `ToolController` with working implementations, add the missing `destroy` method, and register the destroy route. All methods follow the established project conventions: fat models, thin controllers, form-request validation, Scout search, and Inertia responses.
 
-The implementation strategy is:
+The `MaterialController` is the direct pattern to follow — the approach is identical but adapted for the `Tool` model and its related types (`ToolCategory`, `MaintenanceSchedule`, `MaintenanceLog`, `MaintenanceType` enum).
 
-1. Update `routes/web.php` — remove `.except(['destroy'])` from the materials resource route so the `DELETE /materials/{material}` route is registered.
-2. Rewrite `app/Http/Controllers/MaterialController.php` — replace all 7 stub methods with real implementations using the correct imports, form requests, eager loading, and Scout search pattern already established in `ProjectController`.
+Implementation strategy:
+
+1. Update `routes/web.php` — remove `.except(['destroy'])` from the tools resource route so the `DELETE /tools/{tool}` route is registered.
+2. Rewrite `app/Http/Controllers/ToolController.php` — replace all 7 stub methods, add the `destroy` method, update the import block to pull in form requests, enums, and related models.
 
 No new classes, services, migrations, or factories are required. All dependencies already exist.
 
@@ -24,8 +26,8 @@ No new classes, services, migrations, or factories are required. All dependencie
 
 | File | Action | Reason |
 |------|--------|--------|
-| `routes/web.php` | Modify line 42 | Remove `.except(['destroy'])` to register the destroy route |
-| `app/Http/Controllers/MaterialController.php` | Modify | Replace all 7 stub methods; update import block; add 3 private helpers |
+| `routes/web.php` | Modify line 52 | Remove `.except(['destroy'])` to register the destroy route |
+| `app/Http/Controllers/ToolController.php` | Modify | Replace all 7 stub methods, add `destroy`, update import block |
 
 No new files are created. All form requests, enums, models, and Inertia page components already exist.
 
@@ -33,248 +35,232 @@ No new files are created. All form requests, enums, models, and Inertia page com
 
 ## 3. Route Change
 
-**Current (line 42 of `routes/web.php`):**
+**Current (line 52 of `routes/web.php`):**
 
 ```php
-Route::resource('materials', MaterialController::class)->except(['destroy']);
+// Tools (resource: index, create, store, show, edit, update — no destroy)
+Route::resource('tools', ToolController::class)->except(['destroy']);
 ```
 
 **Replace with:**
 
 ```php
-Route::resource('materials', MaterialController::class);
+// Tools (resource: index, create, store, show, edit, update, destroy)
+Route::resource('tools', ToolController::class);
 ```
 
-**Rationale:** The task spec requires the `destroy` route. The `Material` model uses `SoftDeletes`, so `$material->delete()` sets `deleted_at` and does not remove the row. Registering the route enables the `DELETE /materials/{material}` endpoint without altering the existing `materials.adjust-stock` sub-resource route directly below it.
+**Rationale:** The task spec requires the `destroy` route. The `Tool` model uses `SoftDeletes`, so `$tool->delete()` sets `deleted_at` and does not remove the row. The existing `tools.log-maintenance` sub-resource route on line 55 is unaffected.
 
 ---
 
 ## 4. Import Block
 
-The current import block in `MaterialController.php` contains only:
+**Current imports in `ToolController.php`:**
 
 ```php
-use App\Models\Material;
+use App\Models\Tool;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
 ```
 
-The following imports must be added:
+**Replace with:**
 
 ```php
-use App\Enums\MaterialUnit;
-use App\Http\Requests\AdjustStockRequest;
-use App\Http\Requests\StoreMaterialRequest;
-use App\Http\Requests\UpdateMaterialRequest;
-use App\Models\MaterialCategory;
-use App\Models\Supplier;
+use App\Enums\MaintenanceType;
+use App\Http\Requests\StoreToolRequest;
+use App\Http\Requests\UpdateToolRequest;
+use App\Models\Tool;
+use App\Models\ToolCategory;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Inertia\Inertia;
+use Inertia\Response;
 ```
 
-`Request` and `AdjustStockRequest` remain present because `adjustStock()` still uses them (it is out of scope for this task but must not be broken).
+`Request` remains because `logMaintenance(Request $request, Tool $tool)` is an existing sub-resource method that must not be broken by this task.
 
 ---
 
-## 5. Private Helper Methods
+## 5. Method Implementations
 
-To avoid duplicating three identical queries between `create()` and `edit()`, three private methods are added:
-
-```php
-private function unitOptions(): array
-{
-    return collect(MaterialUnit::cases())
-        ->map(fn ($u) => ['value' => $u->value, 'label' => $u->label()])
-        ->all();
-}
-
-private function categoryOptions()
-{
-    return MaterialCategory::orderBy('sort_order')->get(['id', 'name']);
-}
-
-private function supplierOptions()
-{
-    return Supplier::orderBy('name')->get(['id', 'name']);
-}
-```
-
-**Rationale:**
-- `unitOptions()` maps the `MaterialUnit` enum to `{value, label}` pairs. The frontend `<select>` needs a human-readable label alongside the raw string value used for form submission. Calling `label()` on the PHP side avoids shipping a mapping table to the frontend.
-- `categoryOptions()` orders by `sort_order` — the column exists in the `material_categories` migration (`integer, default 0`) and is the appropriate display order for woodworking categories (e.g., Hardwood before Hardware).
-- `supplierOptions()` orders alphabetically by `name`. Only `id` and `name` columns are selected to reduce payload size.
-- Both reference data queries are the same in `create()` and `edit()`. Private helpers prevent duplication with no meaningful abstraction overhead.
-
----
-
-## 6. Method Implementations
-
-### 6.1 `index(Request $request): Response`
+### 5.1 `index(Request $request): Response`
 
 ```php
 public function index(Request $request): Response
 {
-    $filters = $request->only(['search', 'category_id', 'supplier_id']);
+    $filters = $request->only(['search', 'category']);
 
-    $query = Material::query();
+    $query = Tool::query();
 
     if ($search = $filters['search'] ?? null) {
-        $ids = Material::search($search)->keys();
+        $ids = Tool::search($search)->keys();
         $query->whereIn('id', $ids);
     }
 
-    $query->when($filters['category_id'] ?? null,
-        fn ($q, $id) => $q->where('category_id', $id));
+    $query->when($filters['category'] ?? null, fn ($q, $v) => $q->where('category_id', $v));
 
-    $query->when($filters['supplier_id'] ?? null,
-        fn ($q, $id) => $q->where('supplier_id', $id));
+    $tools = $query->with(['category'])->latest()->paginate(15)->withQueryString();
 
-    $materials = $query
-        ->with(['category', 'supplier'])
-        ->latest()
-        ->paginate(15)
-        ->withQueryString();
-
-    return Inertia::render('Materials/Index', [
-        'materials'  => $materials,
+    return Inertia::render('Tools/Index', [
+        'tools'      => $tools,
         'filters'    => $filters,
-        'categories' => $this->categoryOptions(),
-        'suppliers'  => $this->supplierOptions(),
+        'categories' => ToolCategory::orderBy('sort_order')->get(['id', 'name']),
     ]);
 }
 ```
 
 **Key decisions:**
-- Scout `search()->keys()` + `whereIn` is the identical pattern used in `ProjectController::index()`. `keys()` returns ULID strings; `whereIn` handles string primary keys correctly.
-- The `if ($search = ...)` guard ensures Scout is never called when the search param is absent — no performance impact from an unused scout query.
-- `with(['category', 'supplier'])` prevents N+1 on the index list.
-- Categories and suppliers are passed to `index` so the frontend can render filter dropdowns without a separate AJAX call.
-- `latest()` orders by `created_at DESC` — the project-wide default ordering.
-- Filter keys are `category_id` / `supplier_id` (FK column names) so the frontend can post ULID values directly without name transformation.
+- `$request->only(['search', 'category'])` — the tool index has two filters: a text search and a category dropdown. There is no supplier filter on tools (unlike materials).
+- Scout `search()->keys()` + `whereIn('id', $ids)` is the established pattern used in `MaterialController` and `ProjectController`. `keys()` returns ULID strings; `whereIn` handles string primary keys correctly.
+- The `if ($search = ...)` guard ensures Scout is never called when the search param is absent.
+- `with(['category'])` prevents N+1 on the category name in the index list. `maintenanceSchedules` and `maintenanceLogs` are not needed on the index page.
+- `latest()` orders by `created_at DESC` — the project-wide default.
+- `ToolCategory::orderBy('sort_order')` — same ordering convention used for `MaterialCategory` in `MaterialController`.
+- Filter key is `category` (not `category_id`) — consistent with how `MaterialController` uses `category` and `supplier` as filter keys in `$request->only()`.
 
 ---
 
-### 6.2 `create(): Response`
+### 5.2 `create(): Response`
 
 ```php
 public function create(): Response
 {
-    return Inertia::render('Materials/Create', [
-        'units'      => $this->unitOptions(),
-        'categories' => $this->categoryOptions(),
-        'suppliers'  => $this->supplierOptions(),
+    return Inertia::render('Tools/Create', [
+        'categories'       => ToolCategory::orderBy('sort_order')->get(['id', 'name']),
+        'maintenanceTypes' => collect(MaintenanceType::cases())
+            ->map(fn ($t) => ['value' => $t->value, 'label' => $t->label()]),
     ]);
 }
 ```
 
 **Key decisions:**
-- The `Create.jsx` stub already destructures `{ categories, suppliers, units }` — prop names must match exactly.
-- All three reference data sets are fetched via private helpers.
+- The `Tools/Create` page needs a category dropdown and a maintenance type selector (for adding initial maintenance schedules at creation time).
+- `MaintenanceType::cases()` is mapped to `{value, label}` pairs — same pattern as `MaterialUnit` in `MaterialController::create()`. The `label()` method already exists on `MaintenanceType` (verified in `app/Enums/MaintenanceType.php`).
+- Prop name `maintenanceTypes` (camelCase) matches the JavaScript destructuring convention used across the frontend.
 
 ---
 
-### 6.3 `store(StoreMaterialRequest $request): RedirectResponse`
+### 5.3 `store(StoreToolRequest $request): RedirectResponse`
 
 ```php
-public function store(StoreMaterialRequest $request): RedirectResponse
+public function store(StoreToolRequest $request): RedirectResponse
 {
-    $material = Material::create($request->validated());
+    $tool = Tool::create($request->validated());
 
-    return redirect()->route('materials.show', $material)
-        ->with('success', 'Material created successfully.');
+    return redirect()->route('tools.show', $tool)
+        ->with('success', 'Tool created successfully.');
 }
 ```
 
 **Key decisions:**
-- `$request->validated()` is safe to pass directly to `Material::create()` because `StoreMaterialRequest->rules()` only validates fields that are present in `Material::$fillable`. No extra fields can slip through.
-- Redirect to `show` (not `index`) gives immediate confirmation — consistent with `ProjectController::store()`.
-- Flash key `success` is the project-wide convention.
-- Route model binding for `materials.show` resolves by the `id` ULID column (materials use ULID `id`, not a slug like projects).
+- `StoreToolRequest` is injected — validation is never done in the controller (governance rule).
+- `$request->validated()` is safe to pass directly to `Tool::create()` because all fields in `StoreToolRequest->rules()` are present in `Tool::$fillable` (verified: `name`, `brand`, `model_number`, `serial_number`, `category_id`, `purchase_date`, `purchase_price`, `warranty_expires`, `location`, `notes`, `manual_url`).
+- Redirect to `tools.show` with flash `success` — consistent with `MaterialController::store()`.
 
 ---
 
-### 6.4 `show(Material $material): Response`
+### 5.4 `show(Tool $tool): Response`
 
 ```php
-public function show(Material $material): Response
+public function show(Tool $tool): Response
 {
-    $material->load(['category', 'supplier', 'projects']);
+    $tool->load(['category', 'maintenanceSchedules', 'maintenanceLogs']);
 
-    return Inertia::render('Materials/Show', [
-        'material' => $material,
+    return Inertia::render('Tools/Show', [
+        'tool' => $tool,
     ]);
 }
 ```
 
 **Key decisions:**
-- Route model binding resolves by ULID `id` (no `getRouteKeyName()` override on `Material` — unlike `Project` which uses slug).
-- `load(['category', 'supplier', 'projects'])` eager-loads all relationships referenced in the task spec. The `projects` relation is a `BelongsToMany` through `project_materials` with `quantity_used`, `cost_at_time`, and `notes` pivot columns already configured in the model.
-- `Show.jsx` stub destructures `{ material }` — a single prop suffices.
-- Soft-deleted materials are automatically excluded from route model binding by default — Laravel returns 404.
+- Route model binding resolves by ULID `id` — the `Tool` model has no `getRouteKeyName()` override (unlike `Project` which uses slug). Governance rule: "Route model binding with ULID for tools."
+- `load(['category', 'maintenanceSchedules', 'maintenanceLogs'])` — all three relationships are defined on `Tool`. The `show` page displays the tool's category, its recurring maintenance schedules, and the historical log of maintenance events.
+- All three relations are verified on `Tool`: `category()` BelongsTo, `maintenanceSchedules()` HasMany, `maintenanceLogs()` HasMany.
+- Single `tool` prop passed to the page — the page component has full access to nested relations via the loaded data.
+- Soft-deleted tools automatically return 404 from route model binding (default Laravel behaviour).
 
 ---
 
-### 6.5 `edit(Material $material): Response`
+### 5.5 `edit(Tool $tool): Response`
 
 ```php
-public function edit(Material $material): Response
+public function edit(Tool $tool): Response
 {
-    return Inertia::render('Materials/Edit', [
-        'material'   => $material,
-        'units'      => $this->unitOptions(),
-        'categories' => $this->categoryOptions(),
-        'suppliers'  => $this->supplierOptions(),
+    return Inertia::render('Tools/Edit', [
+        'tool'             => $tool,
+        'categories'       => ToolCategory::orderBy('sort_order')->get(['id', 'name']),
+        'maintenanceTypes' => collect(MaintenanceType::cases())
+            ->map(fn ($t) => ['value' => $t->value, 'label' => $t->label()]),
     ]);
 }
 ```
 
 **Key decisions:**
-- `Edit.jsx` stub already destructures `{ material, categories, suppliers, units }` — prop names must match exactly.
-- The material is passed as-is; no extra `load()` is needed because the edit form only needs scalar fields, not related records.
+- Same reference data as `create()`: categories and maintenance types needed for the edit form dropdowns.
+- The tool itself is passed without extra `load()` because the edit form only needs scalar fields (`name`, `brand`, `category_id`, etc.) and not nested relations.
+- Prop name `tool` (singular) — consistent with `Material` in `MaterialController::edit()`.
 
 ---
 
-### 6.6 `update(UpdateMaterialRequest $request, Material $material): RedirectResponse`
+### 5.6 `update(UpdateToolRequest $request, Tool $tool): RedirectResponse`
 
 ```php
-public function update(UpdateMaterialRequest $request, Material $material): RedirectResponse
+public function update(UpdateToolRequest $request, Tool $tool): RedirectResponse
 {
-    $material->update($request->validated());
+    $tool->update($request->validated());
 
-    return redirect()->route('materials.show', $material)
-        ->with('success', 'Material updated successfully.');
+    return redirect()->route('tools.show', $tool)
+        ->with('success', 'Tool updated successfully.');
 }
 ```
 
 **Key decisions:**
-- `UpdateMaterialRequest` uses `sometimes` rules on all fields, so partial PATCH requests work correctly.
-- `$request->validated()` is safe to pass directly to `update()` for the same reason as `store()`.
-- Redirect to `show` (not back) gives a clean view of the saved state — consistent with `ProjectController::update()`.
+- `UpdateToolRequest` is injected — uses `sometimes` rules on all fields so partial PATCH requests work correctly.
+- `$request->validated()` is safe to pass directly to `$tool->update()` for the same reason as `store()`.
+- Redirect to `tools.show` — consistent with `MaterialController::update()`.
 
 ---
 
-### 6.7 `destroy(Material $material): RedirectResponse`
+### 5.7 `destroy(Tool $tool): RedirectResponse`  *(new method)*
 
 ```php
-public function destroy(Material $material): RedirectResponse
+public function destroy(Tool $tool): RedirectResponse
 {
-    $material->delete();
+    $tool->delete();
 
-    return redirect()->route('materials.index')
-        ->with('success', 'Material deleted successfully.');
+    return redirect()->route('tools.index')
+        ->with('success', 'Tool deleted.');
 }
 ```
 
 **Key decisions:**
-- `$material->delete()` triggers the `SoftDeletes` trait — sets `deleted_at`, does not remove the row. This satisfies the governance rule "soft deletes on materials".
-- Redirect to `materials.index` (not back) because the record is no longer accessible at its `show` URL after deletion (route model binding would 404 for soft-deleted records).
-- The route is only available once `.except(['destroy'])` is removed from `routes/web.php`.
+- `$tool->delete()` triggers the `SoftDeletes` trait — sets `deleted_at`, does not remove the row. Governance rule: "Soft deletes on: projects, materials, tools."
+- Redirect to `tools.index` (not back) because the record is no longer accessible at its `show` URL after soft-deletion (route model binding returns 404).
+- Flash key `success` — project-wide convention.
+- This method does not currently exist in the controller. It must be added as a new method, placed after `update()` and before `logMaintenance()`.
 
 ---
 
-### 6.8 `adjustStock` (out of scope — do not modify)
+### 5.8 `logMaintenance(Request $request, Tool $tool): RedirectResponse`  *(out of scope — do not modify)*
 
-This method stub exists at line 44 of the current controller and has its own registered route (`materials.adjust-stock`). It is not listed in the 7 methods of this task and must remain as-is.
+This method is a registered sub-resource route (`tools.log-maintenance`). It is not one of the 7 CRUD methods in scope for this task and must remain as-is (returning `redirect()->back()`).
+
+---
+
+## 6. Final Controller Shape
+
+The completed `ToolController.php` will have this method order:
+
+1. `index(Request $request): Response`
+2. `create(): Response`
+3. `store(StoreToolRequest $request): RedirectResponse`
+4. `show(Tool $tool): Response`
+5. `edit(Tool $tool): Response`
+6. `update(UpdateToolRequest $request, Tool $tool): RedirectResponse`
+7. `destroy(Tool $tool): RedirectResponse`  *(new)*
+8. `logMaintenance(Request $request, Tool $tool): RedirectResponse`  *(unchanged)*
 
 ---
 
@@ -282,67 +268,52 @@ This method stub exists at line 44 of the current controller and has its own reg
 
 | Dependency | Status | Location |
 |---|---|---|
-| `Material` model with `SoftDeletes`, `Searchable`, `HasUlids` | Verified | `app/Models/Material.php` lines 17 |
-| `MaterialUnit` enum with `label()` method (14 cases) | Verified | `app/Enums/MaterialUnit.php` |
-| `StoreMaterialRequest` with full field rules | Verified | `app/Http/Requests/StoreMaterialRequest.php` |
-| `UpdateMaterialRequest` with `sometimes` rules | Verified | `app/Http/Requests/UpdateMaterialRequest.php` |
-| `AdjustStockRequest` | Verified | `app/Http/Requests/AdjustStockRequest.php` |
-| `MaterialCategory` model — `sort_order` column exists | Verified | `app/Models/MaterialCategory.php` + migration `2026_03_03_000002` |
-| `Supplier` model — `name` column exists | Verified | `app/Models/Supplier.php` + migration |
-| `Material::category()` BelongsTo | Verified | `app/Models/Material.php` line 51 |
-| `Material::supplier()` BelongsTo | Verified | `app/Models/Material.php` line 56 |
-| `Material::projects()` BelongsToMany via `project_materials` | Verified | `app/Models/Material.php` line 61 |
-| `Material::toSearchableArray()` for Scout | Verified | `app/Models/Material.php` line 40 (indexes name, description, sku, location) |
-| `materials` table with `category_id`, `supplier_id`, `deleted_at` | Verified | Migration `2026_03_03_000006_create_materials_table.php` |
-| `material_categories` table with `sort_order` column | Verified | Migration `2026_03_03_000002_create_material_categories_table.php` |
-| Inertia pages `Materials/Index`, `Materials/Create`, `Materials/Show`, `Materials/Edit` | Verified (stubs) | `resources/js/Pages/Materials/` — prop signatures confirmed |
-| Scout database driver — `laravel/scout` v10.24.0 | Verified | `composer.json` / application-info |
-| `MaterialFactory` with `withCategory()` and `withSupplier()` states | Verified | `database/factories/MaterialFactory.php` |
-| `MaterialCategoryFactory` | Verified | `database/factories/MaterialCategoryFactory.php` |
-| `SupplierFactory` | Verified | `database/factories/SupplierFactory.php` |
-| Existing `MaterialControllerTest` with 4 `#[Test]` tests | Verified | `tests/Feature/MaterialControllerTest.php` |
+| `Tool` model with `SoftDeletes`, `Searchable`, `HasUlids` | Verified | `app/Models/Tool.php` line 16 |
+| `Tool::$fillable` covers all `StoreToolRequest` fields | Verified | `app/Models/Tool.php` lines 18-31 |
+| `Tool::category()` BelongsTo `ToolCategory` | Verified | `app/Models/Tool.php` line 53 |
+| `Tool::maintenanceSchedules()` HasMany | Verified | `app/Models/Tool.php` line 58 |
+| `Tool::maintenanceLogs()` HasMany | Verified | `app/Models/Tool.php` line 63 |
+| `Tool::toSearchableArray()` for Scout | Verified | `app/Models/Tool.php` lines 41-51 (indexes name, brand, model_number, serial_number, notes) |
+| `ToolCategory` model — `sort_order` column | Verified | `app/Models/ToolCategory.php` line 17 |
+| `MaintenanceType` enum with `label()` method (8 cases) | Verified | `app/Enums/MaintenanceType.php` |
+| `StoreToolRequest` with full field rules | Verified | `app/Http/Requests/StoreToolRequest.php` |
+| `UpdateToolRequest` with `sometimes` rules | Verified | `app/Http/Requests/UpdateToolRequest.php` |
+| Scout database driver — `laravel/scout` | Verified | Installed package |
+| `tools` table with `category_id`, `deleted_at` | Expected | Migrations follow spec |
 
 ---
 
 ## 8. Risks
 
-### Risk 1: Scout `search()->keys()` returns empty collection when search term matches nothing
+### Risk 1: Scout `search()->keys()` returns empty collection on no match
 
-**Impact:** Low. The `whereIn('id', [])` produces a query that returns zero results, which is the correct behaviour for a search with no matches.
+**Impact:** Low. `whereIn('id', [])` produces zero results, which is the correct behaviour for a search with no matches.
 
-**Mitigation:** No action required. This is intentional behaviour.
-
----
-
-### Risk 2: Scout database driver full-text behaviour on short strings
-
-**Impact:** Low. The database Scout driver uses `LIKE %term%` — not a full-text index. On a large dataset this is slow, but for a solo woodworker's inventory this is acceptable.
-
-**Mitigation:** No action required for this task. The `materials` table has no full-text index requirement in the spec.
+**Mitigation:** No action required. This is intentional behaviour, identical to `MaterialController`.
 
 ---
 
-### Risk 3: `Material::$fillable` and `validated()` future divergence
+### Risk 2: `logMaintenance` stub broken by import changes
 
-**Impact:** Medium. If a future form request adds a field not in `$fillable`, `create()`/`update()` will silently ignore it.
+**Impact:** Medium. The `logMaintenance` method signature uses `Request` — which remains in the import block. No breakage occurs.
 
-**Mitigation:** Before running tests, verify that all keys in `StoreMaterialRequest->rules()` are present in `Material::$fillable`. Currently they match exactly (`name`, `description`, `sku`, `category_id`, `supplier_id`, `unit`, `quantity_on_hand`, `low_stock_threshold`, `unit_cost`, `location`, `notes`).
-
----
-
-### Risk 4: `MaterialCategoryFactory` does not set `sort_order`
-
-**Impact:** Low for this task. The factory default produces `sort_order = 0` for all rows (the column default is `0`). Ordering by `sort_order` is non-deterministic when all values are equal.
-
-**Mitigation:** For the existing test suite this is not a problem — no test currently asserts category ordering. If ordering matters in a future test, `MaterialCategoryFactory` should be updated to use `fake()->numberBetween(0, 100)`.
+**Mitigation:** Verify `Request` is kept in the final import list. It is needed for `logMaintenance(Request $request, Tool $tool)`.
 
 ---
 
-### Risk 5: `adjustStock` stub is not broken by import changes
+### Risk 3: `Tool::$fillable` and `StoreToolRequest` field divergence
 
-**Impact:** High if the stub breaks. The method currently uses `Request` (already imported) and `RedirectResponse` (already imported). The new imports added for the other methods do not conflict.
+**Impact:** Medium. If a form request field is not in `$fillable`, `create()`/`update()` silently ignores it.
 
-**Mitigation:** The `adjustStock` method signature (`AdjustStockRequest $request, Material $material`) will become correctly typed once `AdjustStockRequest` is added to the import block. This is an improvement, not a breakage — it replaces the current `Request` type hint.
+**Mitigation:** Both lists have been cross-verified. `StoreToolRequest` rules cover: `name`, `category_id`, `brand`, `model_number`, `serial_number`, `purchase_date`, `purchase_price`, `warranty_expires`, `location`, `manual_url`, `notes` — all present in `Tool::$fillable`. `total_usage_hours` is in `$fillable` but not in the form request (it is updated programmatically by the maintenance log flow, not by user input).
+
+---
+
+### Risk 4: `maintenanceLogs` relation not present on `Tool`
+
+**Impact:** High if missing. Verified: `Tool::maintenanceLogs()` returns `$this->hasMany(MaintenanceLog::class)` at line 63 of `app/Models/Tool.php`.
+
+**Mitigation:** Already confirmed. No action required.
 
 ---
 
@@ -350,54 +321,25 @@ This method stub exists at line 44 of the current controller and has its own reg
 
 | Criterion | How satisfied |
 |---|---|
-| `index` searches via Scout `search()->keys()` + `whereIn` | `Material::search($search)->keys()` + `$query->whereIn('id', $ids)` |
-| `index` filters by `category_id` via `when()` | `$query->when($filters['category_id'], fn ($q, $id) => $q->where('category_id', $id))` |
-| `index` filters by `supplier_id` via `when()` | `$query->when($filters['supplier_id'], fn ($q, $id) => $q->where('supplier_id', $id))` |
-| `index` eager-loads category + supplier | `->with(['category', 'supplier'])` |
-| `index` paginates 15 per page with query string preserved | `->paginate(15)->withQueryString()` |
-| `index` passes materials, filters, categories, suppliers | All four keys in `Inertia::render` prop array |
-| `create` passes units mapped to `{value, label}` | `collect(MaterialUnit::cases())->map(fn ($u) => ['value' => $u->value, 'label' => $u->label()])` |
-| `create` passes categories ordered by `sort_order` | `MaterialCategory::orderBy('sort_order')->get()` |
-| `create` passes suppliers ordered by name | `Supplier::orderBy('name')->get()` |
-| `store` uses `StoreMaterialRequest` | Type-hinted in method signature |
-| `store` creates via `Material::create($validated)` | `Material::create($request->validated())` |
-| `store` redirects to show with flash success | `redirect()->route('materials.show', $material)->with('success', ...)` |
-| `show` loads category, supplier, projects | `$material->load(['category', 'supplier', 'projects'])` |
-| `show` renders `Materials/Show` with material prop | `Inertia::render('Materials/Show', ['material' => $material])` |
-| `edit` passes material, units, categories, suppliers | All four keys in `Inertia::render` prop array |
-| `update` uses `UpdateMaterialRequest` | Type-hinted in method signature |
-| `update` calls `$material->update($validated)` | `$material->update($request->validated())` |
-| `update` redirects to show | `redirect()->route('materials.show', $material)` |
-| `destroy` soft-deletes via `$material->delete()` | `SoftDeletes` trait intercepts and sets `deleted_at` |
-| `destroy` redirects to materials index | `redirect()->route('materials.index')` |
+| `index` searches via Scout `search()->keys()` + `whereIn` | `Tool::search($search)->keys()` + `$query->whereIn('id', $ids)` |
+| `index` filters by category via `when()` | `$query->when($filters['category'], fn ($q, $v) => $q->where('category_id', $v))` |
+| `index` paginates 15 per page with query string | `->paginate(15)->withQueryString()` |
+| `index` passes tools, filters, categories | All three keys in `Inertia::render` prop array |
+| `create` passes categories and maintenanceTypes | Both keys in `Inertia::render` prop array |
+| `maintenanceTypes` mapped to `{value, label}` | `collect(MaintenanceType::cases())->map(fn ($t) => ['value' => $t->value, 'label' => $t->label()])` |
+| `store` uses `StoreToolRequest` | Type-hinted in method signature |
+| `store` creates via `Tool::create($validated)` | `Tool::create($request->validated())` |
+| `store` redirects to show with flash success | `redirect()->route('tools.show', $tool)->with('success', ...)` |
+| `show` eager loads category, maintenanceSchedules, maintenanceLogs | `$tool->load(['category', 'maintenanceSchedules', 'maintenanceLogs'])` |
+| `show` renders `Tools/Show` with tool prop | `Inertia::render('Tools/Show', ['tool' => $tool])` |
+| `edit` passes tool, categories, maintenanceTypes | All three keys in `Inertia::render` prop array |
+| `update` uses `UpdateToolRequest` | Type-hinted in method signature |
+| `update` calls `$tool->update($validated)` | `$tool->update($request->validated())` |
+| `update` redirects to show | `redirect()->route('tools.show', $tool)` |
+| `destroy` soft-deletes via `$tool->delete()` | `SoftDeletes` trait intercepts and sets `deleted_at` |
+| `destroy` redirects to tools index | `redirect()->route('tools.index')` |
 | `destroy` route registered | `.except(['destroy'])` removed from `routes/web.php` |
-| No validation in controllers | All validation delegated to form request classes |
+| No validation in controllers | All validation delegated to `StoreToolRequest` / `UpdateToolRequest` |
 | Inertia responses from all read methods | All 4 read methods return `Inertia::render(...)` |
-| Existing test `test_authenticated_user_can_view_material` passes | `show()` renders the page and passes `$material` prop |
-| Existing test `test_authenticated_user_can_view_materials_index` passes | `index()` renders the page with required props |
-| Existing test `test_authenticated_user_can_view_create_material_form` passes | `create()` renders the page with required props |
-| Existing test `test_guest_is_redirected_from_materials` passes | Route middleware group unchanged |
-
----
-
-## 10. Test Coverage Gaps (Recommended Additions)
-
-The existing `MaterialControllerTest` only asserts HTTP 200 on three routes and has no assertions for `store`, `update`, or `destroy`. The following tests should be added when implementing the controller (using PHPUnit 11 `#[Test]` attribute style):
-
-```
-test_index_passes_materials_filters_categories_suppliers_to_inertia
-test_index_filters_by_category_id
-test_index_filters_by_supplier_id
-test_index_searches_by_term
-test_create_passes_units_categories_suppliers_to_inertia
-test_store_creates_material_and_redirects_to_show
-test_store_fails_validation_without_required_name
-test_store_fails_validation_without_required_unit
-test_show_loads_relations_and_passes_material
-test_edit_passes_material_units_categories_suppliers
-test_update_updates_material_and_redirects_to_show
-test_destroy_soft_deletes_material_and_redirects_to_index
-test_destroyed_material_returns_404_on_show
-```
-
-All tests should use `RefreshDatabase`, `User::factory()->create()`, `actingAs($user)`, and the appropriate factories. Inertia assertions use `$response->assertInertia(fn ($page) => ...)`. Database state assertions use `assertDatabaseHas` and `assertSoftDeleted`.
+| Route model binding resolves Tool by ULID | No `getRouteKeyName()` override — default `id` (ULID) binding |
+| `logMaintenance` stub remains unmodified | Method not touched in this task |

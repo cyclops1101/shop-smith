@@ -1,40 +1,66 @@
-# Phase 3: Inventory & Materials — Task Manifest
+# Phase 4: Tools & Equipment — Task Manifest
 
 **Generated:** 2026-03-03
-**Phase:** 3 — Inventory & Materials
+**Phase:** 4 — Tools & Equipment
 **Status:** Pending
 
 ---
 
 ## Overview
 
-Phase 3 implements full materials inventory management for the Workshop Manager. Phase 1 scaffolded the models, form requests, factories, and route stubs. Phase 2 established the controller/frontend/test patterns to follow. This phase wires everything together: functional MaterialController CRUD, stock adjustment, supplier CRUD (routes + controller + pages), and feature test coverage.
+Phase 4 implements full tool and equipment management. Phases 1–3 established all patterns: controller CRUD with Scout search and `when()` filters, form requests for all validation, Inertia responses, `useForm`/`router`/`usePage` on the frontend, and PHPUnit 11 `#[Test]` feature tests with `assertInertia`/`assertSoftDeleted`.
+
+Phase 1 scaffolded all models, factories, form requests, and route stubs. This phase wires them into working features.
 
 ### Key Existing Assets (Do Not Recreate)
-- `app/Models/Material.php` — has `HasUlids`, `SoftDeletes`, `Searchable`, relationships to category/supplier/projects/tags
-- `app/Models/MaterialCategory.php`, `app/Models/Supplier.php` — complete models
-- `app/Enums/MaterialUnit.php` — 14 cases with `label()` method
-- `app/Http/Requests/StoreMaterialRequest.php`, `UpdateMaterialRequest.php`, `AdjustStockRequest.php` — all validation rules complete
-- `database/factories/MaterialFactory.php`, `SupplierFactory.php`, `MaterialCategoryFactory.php` — ready to use
-- `resources/js/Pages/Materials/{Index,Show,Create,Edit}.jsx` — stub files, all say "under construction"
-- `resources/js/Components/ui/` — Button, Card, Badge, Input, Label, Select, Textarea, Table, Modal, Alert
 
-### Conventions to Follow (from Phase 2)
-- Controllers: index uses `Model::search()` + `when()` filters + `paginate(15)->withQueryString()`, passes `{items, filters}`
-- create/edit pass enum options as `collect(Enum::cases())->map(fn($c) => ['value' => $c->value, 'label' => $c->label()])`
-- store/update use form requests, redirect with `->with('success', '...')`
-- Frontend: `useForm`, debounced search with `useRef` timer, `router.get()` for filter navigation
-- Tests: PHPUnit 11 `#[Test]` attribute, `RefreshDatabase`, `assertInertia`, `assertSoftDeleted`, `assertSessionHasErrors`
+**Models:**
+- `app/Models/Tool.php` — `HasUlids`, `SoftDeletes`, `Searchable`; relationships: `category`, `maintenanceSchedules`, `maintenanceLogs`, `tags`; fillable includes all 11 columns; casts `purchase_date` and `warranty_expires` to `date`
+- `app/Models/ToolCategory.php` — `HasUlids`, no timestamps, fillable: `name`, `sort_order`
+- `app/Models/MaintenanceSchedule.php` — `HasUlids`; fillable: `tool_id`, `maintenance_type`, `task`, `interval_days`, `interval_hours`, `last_performed_at`, `next_due_at`, `notes`; casts `maintenance_type` to `MaintenanceType` enum, date columns to `datetime`
+- `app/Models/MaintenanceLog.php` — `HasUlids`, `UPDATED_AT = null`; fillable: `tool_id`, `schedule_id`, `maintenance_type`, `performed_at`, `cost`, `description`
+
+**Enums:**
+- `app/Enums/MaintenanceType.php` — 8 backed string cases with `label()` method: `BladeChange`, `Alignment`, `Cleaning`, `Lubrication`, `BeltReplacement`, `Calibration`, `FilterChange`, `Other`
+
+**Form Requests:**
+- `app/Http/Requests/StoreToolRequest.php` — validates: `name` (required), `category_id` (nullable ulid exists), `brand`, `model_number`, `serial_number`, `purchase_date`, `purchase_price`, `warranty_expires`, `location`, `manual_url`, `notes`
+- `app/Http/Requests/UpdateToolRequest.php` — same rules all prefixed with `'sometimes'`
+- `app/Http/Requests/LogMaintenanceRequest.php` — validates: `maintenance_type` (required enum), `description` (required), `performed_at` (required date), `cost` (nullable numeric), `schedule_id` (nullable ulid exists), `usage_hours_at` (nullable numeric)
+
+**Controller:**
+- `app/Http/Controllers/ToolController.php` — 7 stub methods (index, create, store, show, edit, update, logMaintenance); all return empty responses
+
+**Routes:**
+- `Route::resource('tools', ToolController::class)->except(['destroy'])` — registered; destroy excluded
+- `Route::post('/tools/{tool}/maintenance', ...)->name('tools.log-maintenance')` — registered
+
+**Factories:** `ToolFactory`, `ToolCategoryFactory`, `MaintenanceScheduleFactory`, `MaintenanceLogFactory` — all ready
+
+**Frontend stubs:** `resources/js/Pages/Tools/{Index,Show,Create,Edit}.jsx` — all say "under construction"
+
+**Tests:** `tests/Feature/ToolControllerTest.php` — 4 minimal placeholder tests (no assertions, no setUp pattern)
+
+**UI Components available:** Button, Card, Badge, Input, Label, Select, Textarea, Table, Modal, Alert
+
+### Conventions to Follow (from Phases 2 and 3)
+
+- `index`: `search()->keys()` + `when()` filters + `with([...])` + `paginate(15)->withQueryString()`
+- `create`/`edit`: enums as `collect(Enum::cases())->map(fn($c) => ['value' => $c->value, 'label' => $c->label()])`, lookups as `get(['id', 'name'])`
+- `store`/`update`: form request injection, redirect with `->with('success', '...')`
+- `destroy`: soft-delete + redirect to index
+- Frontend: `useForm`, debounced search with `useRef`, `router.get()` for filter navigation, `usePage().props.flash` for flash messages
+- Tests: PHPUnit 11 `#[Test]`, `RefreshDatabase`, `setUp` with `$this->user`, `assertInertia`, `assertSessionHasErrors`, `assertSoftDeleted`
 
 ---
 
 ## Task Groups
 
-### Group 1 — Backend (no inter-task dependencies)
+### Group 1 — Backend (no inter-task dependencies; run in parallel)
 
 ---
 
-### TASK-01: MaterialController CRUD Implementation
+### TASK-01: ToolController CRUD Implementation
 
 **Group:** 1 (Backend)
 **Agent:** backend-laravel
@@ -42,343 +68,373 @@ Phase 3 implements full materials inventory management for the Workshop Manager.
 **Estimated complexity:** medium
 
 #### Objective
-Replace all stub methods in `MaterialController` with working implementations. Add the missing `destroy` route for soft-delete support.
+
+Replace all 7 stub methods in `ToolController` with working implementations following the `MaterialController` pattern exactly. Add a `destroy` method and register its route. Tools use ULID for route model binding (not slug).
 
 #### Files to Modify
-- `app/Http/Controllers/MaterialController.php` — replace all 7 stub methods
-- `routes/web.php` — remove `.except(['destroy'])` so the resource route includes destroy
+
+- `app/Http/Controllers/ToolController.php` — replace all 7 stub methods; add `destroy`
+- `routes/web.php` — remove `.except(['destroy'])` from the tools resource route; add `destroy` route
 
 #### Files to Read First
-- `app/Http/Controllers/ProjectController.php` — follow the exact same patterns
-- `app/Models/Material.php` — understand relationships and searchable config
-- `app/Http/Requests/StoreMaterialRequest.php`, `UpdateMaterialRequest.php`, `AdjustStockRequest.php`
-- `app/Enums/MaterialUnit.php`
-- `app/Models/MaterialCategory.php`, `app/Models/Supplier.php`
+
+- `app/Http/Controllers/MaterialController.php` — primary pattern reference
+- `app/Models/Tool.php` — understand relationships and `toSearchableArray`
+- `app/Http/Requests/StoreToolRequest.php`, `UpdateToolRequest.php`
+- `app/Models/ToolCategory.php`
+- `app/Enums/MaintenanceType.php`
 
 #### Implementation Spec
 
+**Required imports to add to controller:**
+```php
+use App\Enums\MaintenanceType;
+use App\Http\Requests\StoreToolRequest;
+use App\Http\Requests\UpdateToolRequest;
+use App\Models\ToolCategory;
+```
+
 **`index(Request $request): Response`**
 ```php
-$filters = $request->only(['search', 'category', 'supplier']);
+$filters = $request->only(['search', 'category']);
 
-$query = Material::query();
+$query = Tool::query();
 
 if ($search = $filters['search'] ?? null) {
-    $ids = Material::search($search)->keys();
+    $ids = Tool::search($search)->keys();
     $query->whereIn('id', $ids);
 }
 
-$query->when($filters['category'] ?? null, fn($q, $v) => $q->where('category_id', $v));
-$query->when($filters['supplier'] ?? null, fn($q, $v) => $q->where('supplier_id', $v));
+$query->when($filters['category'] ?? null, fn ($q, $v) => $q->where('category_id', $v));
 
-$materials = $query->with(['category', 'supplier'])->latest()->paginate(15)->withQueryString();
+$tools = $query->with(['category'])->latest()->paginate(15)->withQueryString();
 
-return Inertia::render('Materials/Index', [
-    'materials'  => $materials,
+return Inertia::render('Tools/Index', [
+    'tools'      => $tools,
     'filters'    => $filters,
-    'categories' => MaterialCategory::orderBy('sort_order')->get(['id', 'name']),
-    'suppliers'  => Supplier::orderBy('name')->get(['id', 'name']),
+    'categories' => ToolCategory::orderBy('sort_order')->get(['id', 'name']),
 ]);
 ```
 
 **`create(): Response`**
 ```php
-return Inertia::render('Materials/Create', [
-    'units'      => collect(MaterialUnit::cases())->map(fn($u) => ['value' => $u->value, 'label' => $u->label()]),
-    'categories' => MaterialCategory::orderBy('sort_order')->get(['id', 'name']),
-    'suppliers'  => Supplier::orderBy('name')->get(['id', 'name']),
+return Inertia::render('Tools/Create', [
+    'categories'        => ToolCategory::orderBy('sort_order')->get(['id', 'name']),
+    'maintenanceTypes'  => collect(MaintenanceType::cases())->map(fn ($t) => ['value' => $t->value, 'label' => $t->label()]),
 ]);
 ```
 
-**`store(StoreMaterialRequest $request): RedirectResponse`**
+**`store(StoreToolRequest $request): RedirectResponse`**
 ```php
-$material = Material::create($request->validated());
+$tool = Tool::create($request->validated());
 
-return redirect()->route('materials.show', $material)
-    ->with('success', 'Material created successfully.');
+return redirect()->route('tools.show', $tool)
+    ->with('success', 'Tool created successfully.');
 ```
 
-**`show(Material $material): Response`**
+**`show(Tool $tool): Response`**
 ```php
-$material->load(['category', 'supplier', 'projects']);
+$tool->load([
+    'category',
+    'maintenanceSchedules' => fn ($q) => $q->orderBy('next_due_at'),
+    'maintenanceLogs'      => fn ($q) => $q->orderBy('performed_at', 'desc')->limit(20),
+]);
 
-return Inertia::render('Materials/Show', [
-    'material' => $material,
+return Inertia::render('Tools/Show', [
+    'tool'              => $tool,
+    'maintenanceTypes'  => collect(MaintenanceType::cases())->map(fn ($t) => ['value' => $t->value, 'label' => $t->label()]),
 ]);
 ```
 
-**`edit(Material $material): Response`**
+**`edit(Tool $tool): Response`**
 ```php
-return Inertia::render('Materials/Edit', [
-    'material'   => $material,
-    'units'      => collect(MaterialUnit::cases())->map(fn($u) => ['value' => $u->value, 'label' => $u->label()]),
-    'categories' => MaterialCategory::orderBy('sort_order')->get(['id', 'name']),
-    'suppliers'  => Supplier::orderBy('name')->get(['id', 'name']),
+return Inertia::render('Tools/Edit', [
+    'tool'       => $tool,
+    'categories' => ToolCategory::orderBy('sort_order')->get(['id', 'name']),
 ]);
 ```
 
-**`update(UpdateMaterialRequest $request, Material $material): RedirectResponse`**
+**`update(UpdateToolRequest $request, Tool $tool): RedirectResponse`**
 ```php
-$material->update($request->validated());
+$tool->update($request->validated());
 
-return redirect()->route('materials.show', $material)
-    ->with('success', 'Material updated successfully.');
+return redirect()->route('tools.show', $tool)
+    ->with('success', 'Tool updated successfully.');
 ```
 
-**`destroy(Material $material): RedirectResponse`**
+**`destroy(Tool $tool): RedirectResponse`**
 ```php
-$material->delete();
+$tool->delete();
 
-return redirect()->route('materials.index')
-    ->with('success', 'Material deleted.');
+return redirect()->route('tools.index')
+    ->with('success', 'Tool deleted.');
 ```
-
-**`adjustStock` is implemented in TASK-02.**
 
 **Routes change** — in `routes/web.php`, change:
 ```php
-Route::resource('materials', MaterialController::class)->except(['destroy']);
+Route::resource('tools', ToolController::class)->except(['destroy']);
 ```
 to:
 ```php
-Route::resource('materials', MaterialController::class);
-```
-
-Add required imports to the controller:
-```php
-use App\Enums\MaterialUnit;
-use App\Http\Requests\StoreMaterialRequest;
-use App\Http\Requests\UpdateMaterialRequest;
-use App\Http\Requests\AdjustStockRequest;
-use App\Models\MaterialCategory;
-use App\Models\Supplier;
+Route::resource('tools', ToolController::class);
 ```
 
 #### Acceptance Criteria
-- All 7 methods return correct Inertia responses or redirects
-- `index` passes `materials` (paginated with category+supplier eager loaded), `filters`, `categories`, `suppliers`
-- `create` and `edit` pass `units`, `categories`, `suppliers`
+
+- All 8 methods (7 stubs + new destroy) return correct Inertia responses or redirects
+- `index` passes `tools` (paginated with category eager loaded), `filters`, `categories`
+- `create` passes `categories` and `maintenanceTypes`
+- `show` eager loads `category`, `maintenanceSchedules` (ordered by `next_due_at`), and `maintenanceLogs` (most recent 20, ordered by `performed_at` desc); passes `maintenanceTypes` for the log form
+- `edit` passes `tool` and `categories`
 - `store` creates record and redirects to show with flash success
-- `update` saves changes and redirects to show with flash success
+- `update` saves and redirects to show with flash success
 - `destroy` soft-deletes and redirects to index with flash success
-- Destroy route is registered in web.php (`.except(['destroy'])` removed)
+- Destroy route is registered (`.except(['destroy'])` removed from web.php)
 
 ---
 
-### TASK-02: Stock Adjustment Backend
+### TASK-02: Maintenance Logging + Schedule Management Backend
 
 **Group:** 1 (Backend)
 **Agent:** backend-laravel
 **Depends on:** none (implement alongside TASK-01)
-**Estimated complexity:** low
-
-#### Objective
-Implement `adjustStock` in `MaterialController`. The adjustment adds a signed quantity (positive = receive stock, negative = remove stock) to `quantity_on_hand`. No separate audit table exists — flash a descriptive success message. Add model-level helpers and a `scopeLowStock` query scope to the `Material` model.
-
-#### Files to Modify
-- `app/Http/Controllers/MaterialController.php` — implement `adjustStock` method
-- `app/Models/Material.php` — add `scopeLowStock`, `isLowStock()`, `adjustQuantity()` method
-
-#### Implementation Spec
-
-**`Material` model additions:**
-
-Add `use Illuminate\Database\Eloquent\Builder;` to the model imports.
-
-```php
-// Scope: materials at or below their low_stock_threshold (threshold must be set)
-public function scopeLowStock(Builder $query): Builder
-{
-    return $query->whereNotNull('low_stock_threshold')
-        ->whereColumn('quantity_on_hand', '<=', 'low_stock_threshold');
-}
-
-// Is this material currently low on stock?
-public function isLowStock(): bool
-{
-    return $this->low_stock_threshold !== null
-        && $this->quantity_on_hand <= $this->low_stock_threshold;
-}
-
-// Encapsulate quantity adjustment — never goes below zero
-public function adjustQuantity(float $delta): void
-{
-    $this->quantity_on_hand = max(0, $this->quantity_on_hand + $delta);
-    $this->save();
-}
-```
-
-**`adjustStock` controller method:**
-```php
-public function adjustStock(AdjustStockRequest $request, Material $material): RedirectResponse
-{
-    $data     = $request->validated();
-    $delta    = (float) $data['quantity'];
-
-    $material->adjustQuantity($delta);
-
-    $direction = $delta >= 0 ? 'Added' : 'Removed';
-    $abs       = abs($delta);
-    $unitLabel = $material->unit->label();
-    $after     = $material->quantity_on_hand;
-
-    $message = "{$direction} {$abs} {$unitLabel} — stock now: {$after}";
-    if (!empty($data['notes'])) {
-        $message .= " ({$data['notes']})";
-    }
-
-    return redirect()->route('materials.show', $material)
-        ->with('success', $message);
-}
-```
-
-Note: `unit` is cast to `MaterialUnit` enum in the model, so `$material->unit->label()` works directly.
-
-#### Acceptance Criteria
-- POST `/materials/{material}/adjust` with `quantity=10` increments `quantity_on_hand` by 10
-- POST with `quantity=-5` decrements; `quantity_on_hand` never goes below 0
-- Flash message includes direction, amount, and resulting stock level
-- `Material::lowStock()` scope returns only materials with threshold set AND `quantity_on_hand <= low_stock_threshold`
-- `isLowStock()` returns correct boolean per the same logic
-- `adjustQuantity()` is an encapsulated model method (not inline in controller)
-
----
-
-### TASK-03: Supplier CRUD Backend
-
-**Group:** 1 (Backend)
-**Agent:** backend-laravel
-**Depends on:** none
 **Estimated complexity:** medium
 
 #### Objective
-Create a complete Supplier CRUD: controller, two form requests, routes. Suppliers have no soft deletes per CLAUDE.md ("Hard delete everything else").
 
-#### Files to Create
-- `app/Http/Controllers/SupplierController.php`
-- `app/Http/Requests/StoreSupplierRequest.php`
-- `app/Http/Requests/UpdateSupplierRequest.php`
+Implement `logMaintenance` in `ToolController`. When logging against a schedule (`schedule_id` is provided), update `last_performed_at` and recompute `next_due_at` on the schedule. Add two new sub-resource routes for creating and deleting maintenance schedules. Add a `StoreMaintenanceScheduleRequest` form request.
 
 #### Files to Modify
-- `routes/web.php` — add supplier resource routes inside the auth+verified middleware group
+
+- `app/Http/Controllers/ToolController.php` — implement `logMaintenance`; add `storeSchedule` and `destroySchedule` methods
+- `routes/web.php` — add schedule sub-resource routes (POST create, DELETE destroy)
+
+#### Files to Create
+
+- `app/Http/Requests/StoreMaintenanceScheduleRequest.php`
 
 #### Files to Read First
-- `app/Models/Supplier.php`
-- `app/Http/Controllers/ProjectController.php` — pattern reference
 
-#### Route Registration
+- `app/Models/MaintenanceSchedule.php` — fields, casts, relationships
+- `app/Models/MaintenanceLog.php` — fields, UPDATED_AT = null
+- `app/Http/Requests/LogMaintenanceRequest.php` — all validated fields
+- `app/Enums/MaintenanceType.php`
 
-Add inside the `auth + verified` middleware group in `routes/web.php`:
-```php
-use App\Http\Controllers\SupplierController;
+#### Implementation Spec
 
-// Suppliers (full resource — hard delete, no soft delete)
-Route::resource('suppliers', SupplierController::class);
-```
-
-#### `StoreSupplierRequest`
+**`StoreMaintenanceScheduleRequest` validation rules:**
 ```php
 public function authorize(): bool { return true; }
 
 public function rules(): array
 {
     return [
-        'name'         => ['required', 'string', 'max:255'],
-        'contact_name' => ['nullable', 'string', 'max:255'],
-        'email'        => ['nullable', 'email', 'max:255'],
-        'phone'        => ['nullable', 'string', 'max:50'],
-        'website'      => ['nullable', 'url', 'max:500'],
-        'address'      => ['nullable', 'string'],
-        'notes'        => ['nullable', 'string'],
+        'maintenance_type' => ['required', Rule::enum(MaintenanceType::class)],
+        'task'             => ['required', 'string', 'max:255'],
+        'interval_days'    => ['nullable', 'integer', 'min:1'],
+        'interval_hours'   => ['nullable', 'numeric', 'min:0.1'],
+        'notes'            => ['nullable', 'string'],
     ];
 }
 ```
 
-#### `UpdateSupplierRequest`
-Same rules as Store, but all fields prefixed with `'sometimes'`:
+Note: at least one of `interval_days` or `interval_hours` must be provided. Add a custom `after` validation rule using `withValidator`:
 ```php
-'name' => ['sometimes', 'required', 'string', 'max:255'],
-// ... all other fields also get 'sometimes'
-```
-
-#### `SupplierController` Methods
-
-**`index(Request $request): Response`**
-
-Supplier does not use Laravel Scout/Searchable — use raw `LIKE` query:
-```php
-$filters = $request->only(['search']);
-
-$query = Supplier::query();
-if ($search = $filters['search'] ?? null) {
-    $query->where(function ($q) use ($search) {
-        $q->where('name', 'like', "%{$search}%")
-          ->orWhere('contact_name', 'like', "%{$search}%")
-          ->orWhere('email', 'like', "%{$search}%");
+public function withValidator($validator): void
+{
+    $validator->after(function ($v) {
+        if (empty($this->interval_days) && empty($this->interval_hours)) {
+            $v->errors()->add('interval_days', 'At least one interval (days or hours) is required.');
+        }
     });
 }
-$suppliers = $query->orderBy('name')->paginate(20)->withQueryString();
-
-return Inertia::render('Suppliers/Index', compact('suppliers', 'filters'));
 ```
 
-**`create(): Response`**
+**New routes to add in `routes/web.php`** (inside the auth+verified group, after the existing maintenance route):
 ```php
-return Inertia::render('Suppliers/Create');
+Route::post('/tools/{tool}/schedules', [ToolController::class, 'storeSchedule'])->name('tools.schedules.store');
+Route::delete('/tools/{tool}/schedules/{schedule}', [ToolController::class, 'destroySchedule'])->name('tools.schedules.destroy');
 ```
 
-**`store(StoreSupplierRequest $request): RedirectResponse`**
+**`logMaintenance(LogMaintenanceRequest $request, Tool $tool): RedirectResponse`**
 ```php
-$supplier = Supplier::create($request->validated());
+public function logMaintenance(LogMaintenanceRequest $request, Tool $tool): RedirectResponse
+{
+    $data = $request->validated();
 
-return redirect()->route('suppliers.show', $supplier)
-    ->with('success', 'Supplier created successfully.');
+    // Create the maintenance log entry
+    $log = $tool->maintenanceLogs()->create([
+        'schedule_id'      => $data['schedule_id'] ?? null,
+        'maintenance_type' => $data['maintenance_type'],
+        'description'      => $data['description'],
+        'performed_at'     => $data['performed_at'],
+        'cost'             => $data['cost'] ?? null,
+    ]);
+
+    // If logging against a schedule, update its tracking fields and compute next due date
+    if (!empty($data['schedule_id'])) {
+        $schedule = MaintenanceSchedule::find($data['schedule_id']);
+        if ($schedule) {
+            $performedAt = \Carbon\Carbon::parse($data['performed_at']);
+            $schedule->last_performed_at = $performedAt;
+
+            // Compute next_due_at: prefer interval_days over interval_hours
+            if ($schedule->interval_days) {
+                $schedule->next_due_at = $performedAt->copy()->addDays($schedule->interval_days);
+            } elseif ($schedule->interval_hours) {
+                $schedule->next_due_at = $performedAt->copy()->addHours($schedule->interval_hours);
+            } else {
+                $schedule->next_due_at = null;
+            }
+
+            $schedule->save();
+        }
+    }
+
+    // If usage_hours_at is provided, update tool's total_usage_hours
+    if (!empty($data['usage_hours_at'])) {
+        $tool->update(['total_usage_hours' => $data['usage_hours_at']]);
+    }
+
+    return redirect()->route('tools.show', $tool)
+        ->with('success', 'Maintenance logged successfully.');
+}
 ```
 
-**`show(Supplier $supplier): Response`**
+**`storeSchedule(StoreMaintenanceScheduleRequest $request, Tool $tool): RedirectResponse`**
 ```php
-$supplier->loadCount('materials');
+public function storeSchedule(StoreMaintenanceScheduleRequest $request, Tool $tool): RedirectResponse
+{
+    $tool->maintenanceSchedules()->create($request->validated());
 
-return Inertia::render('Suppliers/Show', compact('supplier'));
+    return redirect()->route('tools.show', $tool)
+        ->with('success', 'Maintenance schedule added.');
+}
 ```
 
-**`edit(Supplier $supplier): Response`**
+**`destroySchedule(Tool $tool, MaintenanceSchedule $schedule): RedirectResponse`**
 ```php
-return Inertia::render('Suppliers/Edit', compact('supplier'));
+public function destroySchedule(Tool $tool, MaintenanceSchedule $schedule): RedirectResponse
+{
+    $schedule->delete(); // hard delete — no soft deletes on schedules per CLAUDE.md
+
+    return redirect()->route('tools.show', $tool)
+        ->with('success', 'Schedule removed.');
+}
 ```
 
-**`update(UpdateSupplierRequest $request, Supplier $supplier): RedirectResponse`**
+Add required imports to the controller:
 ```php
-$supplier->update($request->validated());
-
-return redirect()->route('suppliers.show', $supplier)
-    ->with('success', 'Supplier updated successfully.');
-```
-
-**`destroy(Supplier $supplier): RedirectResponse`**
-```php
-$supplier->delete(); // hard delete — DB nullOnDelete() handles orphan materials
-
-return redirect()->route('suppliers.index')
-    ->with('success', 'Supplier deleted.');
+use App\Http\Requests\LogMaintenanceRequest;
+use App\Http\Requests\StoreMaintenanceScheduleRequest;
+use App\Models\MaintenanceSchedule;
+use Carbon\Carbon;
 ```
 
 #### Acceptance Criteria
-- All 7 resource routes registered at `/suppliers` and functional
-- `StoreSupplierRequest` and `UpdateSupplierRequest` validate all fields correctly
-- `index` paginates (20/page) and supports search by name/contact/email
-- `store` and `update` redirect to show with flash success
-- `destroy` hard-deletes (assertDatabaseMissing, not assertSoftDeleted)
-- DB `nullOnDelete()` cascade automatically nullifies `supplier_id` on related materials when supplier is deleted
-- Supplier pages render at correct Inertia paths: `Suppliers/Index`, `Suppliers/Create`, `Suppliers/Show`, `Suppliers/Edit`
+
+- POST `/tools/{tool}/maintenance` with valid data creates a `MaintenanceLog` row linked to the tool
+- When `schedule_id` is provided, the referenced `MaintenanceSchedule` has its `last_performed_at` updated to `performed_at` and `next_due_at` recalculated from the interval
+- When `usage_hours_at` is provided, `tools.total_usage_hours` is updated
+- POST `/tools/{tool}/schedules` with valid data creates a `MaintenanceSchedule` row
+- `StoreMaintenanceScheduleRequest` rejects requests where both `interval_days` and `interval_hours` are null/absent
+- DELETE `/tools/{tool}/schedules/{schedule}` hard-deletes the schedule (assertDatabaseMissing)
+- All three actions redirect to `tools.show` with flash success
 
 ---
 
-### Group 2 — Frontend (depends on Group 1 completions)
+### TASK-03: MaintenanceSchedule Model Scopes and Helpers
+
+**Group:** 1 (Backend)
+**Agent:** backend-laravel
+**Depends on:** none
+**Estimated complexity:** low
+
+#### Objective
+
+Add `scopeOverdue`, `scopeDueSoon`, `isOverdue()`, and `isDueSoon()` to `MaintenanceSchedule`. These power the dashboard "upcoming maintenance" widget and the status badges on the Tools Show page. "Due soon" means `next_due_at` is within the next 7 days (configurable via constant). "Overdue" means `next_due_at` is in the past.
+
+#### Files to Modify
+
+- `app/Models/MaintenanceSchedule.php` — add scopes and helpers
+
+#### Files to Read First
+
+- `app/Models/Material.php` — see how `scopeLowStock` and `isLowStock()` are implemented as a pattern
+
+#### Implementation Spec
+
+Add `use Illuminate\Database\Eloquent\Builder;` to the model imports if not already present.
+
+```php
+// Number of days ahead to consider "due soon"
+const DUE_SOON_DAYS = 7;
+
+// Scope: schedules where next_due_at is in the past (and not null)
+public function scopeOverdue(Builder $query): Builder
+{
+    return $query->whereNotNull('next_due_at')
+        ->where('next_due_at', '<', now());
+}
+
+// Scope: schedules where next_due_at is within the next DUE_SOON_DAYS days (and not overdue)
+public function scopeDueSoon(Builder $query): Builder
+{
+    return $query->whereNotNull('next_due_at')
+        ->where('next_due_at', '>=', now())
+        ->where('next_due_at', '<=', now()->addDays(self::DUE_SOON_DAYS));
+}
+
+// Is this schedule currently overdue?
+public function isOverdue(): bool
+{
+    return $this->next_due_at !== null && $this->next_due_at->isPast();
+}
+
+// Is this schedule due within DUE_SOON_DAYS days (and not yet overdue)?
+public function isDueSoon(): bool
+{
+    return $this->next_due_at !== null
+        && !$this->next_due_at->isPast()
+        && $this->next_due_at->lte(now()->addDays(self::DUE_SOON_DAYS));
+}
+```
+
+Also add an accessor to expose these as serialized fields on the model so they are available in Inertia props without extra computation in controllers:
+
+```php
+protected function appends(): array
+{
+    return ['is_overdue', 'is_due_soon'];
+}
+
+public function getIsOverdueAttribute(): bool
+{
+    return $this->isOverdue();
+}
+
+public function getIsDueSoonAttribute(): bool
+{
+    return $this->isDueSoon();
+}
+```
+
+#### Acceptance Criteria
+
+- `MaintenanceSchedule::overdue()` returns only schedules where `next_due_at` is not null and in the past
+- `MaintenanceSchedule::dueSoon()` returns only schedules where `next_due_at` is not null, not past, and within 7 days
+- `$schedule->isOverdue()` returns `true` for past `next_due_at`, `false` otherwise
+- `$schedule->isDueSoon()` returns `true` when within 7-day window and not overdue
+- Both return `false` when `next_due_at` is null
+- `is_overdue` and `is_due_soon` are included in serialized model output (accessible in Inertia props as `schedule.is_overdue`)
 
 ---
 
-### TASK-04: Materials Index Page
+## Group 2 — Frontend (depends on Group 1 completions)
+
+---
+
+### TASK-04: Tools Index Page
 
 **Group:** 2 (Frontend)
 **Agent:** frontend-react
@@ -386,57 +442,60 @@ return redirect()->route('suppliers.index')
 **Estimated complexity:** medium
 
 #### Objective
-Replace the stub `resources/js/Pages/Materials/Index.jsx` with a full working page. Follow the `Projects/Index.jsx` pattern exactly.
+
+Replace the stub `resources/js/Pages/Tools/Index.jsx` with a full working page. Follow the `Materials/Index.jsx` pattern exactly — same layout, same debounced search, same pagination, same filter bar structure but with a category filter instead of supplier.
 
 #### Files to Modify
-- `resources/js/Pages/Materials/Index.jsx` — full replacement
+
+- `resources/js/Pages/Tools/Index.jsx` — full replacement
+
+#### Files to Read First
+
+- `resources/js/Pages/Materials/Index.jsx` — primary pattern reference
 
 #### Data Contract (from TASK-01 controller)
-Props: `{ materials, filters, categories, suppliers }`
-- `materials`: Laravel paginator `{ data[], current_page, last_page, total, links: { prev, next } }`
-- `materials.data[n]`: `{ id, name, sku, unit, quantity_on_hand, low_stock_threshold, unit_cost, category: { name } | null, supplier: { name } | null }`
-- `filters`: `{ search, category, supplier }`
+
+Props: `{ tools, filters, categories }`
+- `tools`: Laravel paginator `{ data[], current_page, last_page, total, links: { prev, next } }`
+- `tools.data[n]`: `{ id, name, brand, model_number, location, total_usage_hours, category: { id, name } | null }`
+- `filters`: `{ search, category }`
 - `categories`: `[{ id, name }]`
-- `suppliers`: `[{ id, name }]`
 
 #### UI Spec
 
-**Page header:** "Materials" title + total count subtitle + "+ New Material" button linking to `/materials/create`.
+**Page header:** "Tools" title + total count subtitle (`{tools.total} tool{tools.total !== 1 ? 's' : ''} total`) + "+ New Tool" button linking to `/tools/create`.
 
-**Filter bar (3 controls, same layout as Projects/Index):**
-1. Text search input — debounced 300ms — filters via `?search=`
+**Filter bar (2 controls):**
+1. Text search input — debounced 300ms — updates `?search=` via `router.get('/tools', params, { preserveState: true, replace: true })`
 2. Category select — options mapped from `categories` prop as `{ value: id, label: name }`, placeholder "All categories"
-3. Supplier select — options mapped from `suppliers` prop as `{ value: id, label: name }`, placeholder "All suppliers"
 
-Filter navigation: `router.get('/materials', params, { preserveState: true, replace: true })`
-
-**Materials table columns:**
+**Tools table columns:**
 
 | Column | Notes |
 |--------|-------|
-| Name | Link to `/materials/{id}` in amber text |
-| SKU | `—` if null |
-| Category | Category name or `—` if null |
-| Unit | The enum value string (e.g., `board_foot`) — display as-is; the backend returns the raw value |
-| In Stock | `{quantity_on_hand}` number |
-| Low Stock | Red Badge with text "Low Stock" when `quantity_on_hand <= low_stock_threshold && low_stock_threshold != null`; empty otherwise |
-| Unit Cost | `$X.XX` (use `Intl.NumberFormat`) or `—` if null |
-| Actions | "Edit" link to `/materials/{id}/edit` |
+| Name | `<Link href={'/tools/' + tool.id}>` in amber text |
+| Brand | `tool.brand` or `—` if null |
+| Model | `tool.model_number` or `—` if null |
+| Category | `tool.category?.name` or `—` if null |
+| Location | `tool.location` or `—` if null |
+| Usage Hours | `tool.total_usage_hours` — render as number; `0` if falsy |
+| Actions | "Edit" link to `/tools/{id}/edit` |
 
-**Pagination:** Previous/Next links using `materials.links.prev` and `materials.links.next`, same markup as Projects/Index.
+**Pagination:** Previous/Next links using `tools.links.prev` and `tools.links.next`. Show `Page {current_page} of {last_page} ({total} total)` on the left.
 
-**Empty state:** Single `<TableCell colSpan={8}>` centered "No materials found."
+**Empty state:** Single `<TableCell colSpan={7}>` centered "No tools found."
 
 #### Acceptance Criteria
-- Renders at Inertia component `Materials/Index`
-- Search, category, and supplier filters update URL and re-render
-- Low stock badge appears only when threshold is set and qty is at or below threshold
+
+- Renders at Inertia component `Tools/Index`
+- Search and category filters update URL and re-render without full page reload
 - Pagination controls render and navigate correctly
-- All columns render; nulls display as `—`
+- All columns render; nulls display as `—`; `total_usage_hours` shows `0` when falsy
+- Wraps in `AppLayout` with `<Head title="Tools" />`
 
 ---
 
-### TASK-05: Materials Create and Edit Forms
+### TASK-05: Tools Create and Edit Forms
 
 **Group:** 2 (Frontend)
 **Agent:** frontend-react
@@ -444,399 +503,286 @@ Filter navigation: `router.get('/materials', params, { preserveState: true, repl
 **Estimated complexity:** medium
 
 #### Objective
-Replace stub `Create.jsx` and `Edit.jsx` with complete working forms. Follow `Projects/Create.jsx` and `Projects/Edit.jsx` patterns.
+
+Replace stub `Create.jsx` and `Edit.jsx` with complete working forms. Follow the `Materials/Create.jsx` and `Materials/Edit.jsx` patterns — multi-section Card layout, `useForm`, inline validation errors, loading state on submit button.
 
 #### Files to Modify
-- `resources/js/Pages/Materials/Create.jsx` — full replacement
-- `resources/js/Pages/Materials/Edit.jsx` — full replacement
+
+- `resources/js/Pages/Tools/Create.jsx` — full replacement
+- `resources/js/Pages/Tools/Edit.jsx` — full replacement
 
 #### Data Contract
-Create props: `{ units, categories, suppliers }`
-Edit props: `{ material, units, categories, suppliers }`
 
-- `units`: `[{ value: 'board_foot', label: 'Board Foot' }, ...]`
+Create props: `{ categories, maintenanceTypes }`
+Edit props: `{ tool, categories }`
 - `categories`: `[{ id, name }]` — map to `{ value: id, label: name }` inside the component
-- `suppliers`: `[{ id, name }]` — map to `{ value: id, label: name }` inside the component
+- `maintenanceTypes`: `[{ value: 'blade_change', label: 'Blade Change' }, ...]` (only on create; not needed on edit)
 
 #### Form Fields
 
 **Section: Basic Info**
-- `name` — text input, required, placeholder "e.g. 3/4 Baltic Birch Plywood"
-- `sku` — text input, optional, placeholder "e.g. SKU-0001-AB"
-- `description` — Textarea, optional, rows=3
-- `category_id` — Select, options from `categories`, placeholder "No category", nullable
-- `unit` — Select, options from `units`, required
+- `name` — text input, required, placeholder "e.g. DeWalt DW735 Planer", `autoFocus`
+- `brand` — text input, optional, placeholder "e.g. DeWalt"
+- `model_number` — text input, optional, placeholder "e.g. DW735X"
+- `serial_number` — text input, optional, placeholder "e.g. SN-12345"
+- `category_id` — Select from `categories` as `{ value: id, label: name }`, placeholder "No category", nullable
 
-**Section: Stock**
-- `quantity_on_hand` — number input, step=0.01, min=0, required, placeholder "0.00"
-- `low_stock_threshold` — number input, step=0.01, min=0, optional; add helper text below input: "Alert when stock falls at or below this amount"
-- `unit_cost` — number input, step=0.01, min=0, optional, placeholder "0.00"; Label shows "Unit Cost ($)"
+**Section: Purchase & Warranty**
+- `purchase_date` — date input, optional
+- `purchase_price` — number input, step=0.01, min=0, optional, placeholder "0.00"; Label shows "Purchase Price ($)"
+- `warranty_expires` — date input, optional; Label shows "Warranty Expires"
 
-**Section: Supplier & Location**
-- `supplier_id` — Select, options from `suppliers`, placeholder "No supplier", nullable
-- `location` — text input, optional, placeholder "e.g. Shelf A3, Bin 12"
-
-**Section: Notes**
+**Section: Location & Notes**
+- `location` — text input, optional, placeholder "e.g. Main shop, left wall"
+- `manual_url` — url input, optional, placeholder "https://..."
 - `notes` — Textarea, optional, rows=4
 
-**Create form:**
+**Create form initial state:**
 ```js
 const form = useForm({
-    name: '', sku: '', description: '', category_id: '', unit: '',
-    quantity_on_hand: '', low_stock_threshold: '', unit_cost: '',
-    supplier_id: '', location: '', notes: '',
+    name: '', brand: '', model_number: '', serial_number: '',
+    category_id: '', purchase_date: '', purchase_price: '',
+    warranty_expires: '', location: '', manual_url: '', notes: '',
 });
-// submit: form.post(route('materials.store'))
+// submit: form.post(route('tools.store'))
 ```
-Cancel link goes to `route('materials.index')`.
+Cancel link goes to `route('tools.index')`.
 
-**Edit form:**
+**Edit form initial state:**
 ```js
 const form = useForm({
-    name: material.name,
-    sku: material.sku ?? '',
-    description: material.description ?? '',
-    category_id: material.category_id ?? '',
-    unit: material.unit,
-    quantity_on_hand: material.quantity_on_hand,
-    low_stock_threshold: material.low_stock_threshold ?? '',
-    unit_cost: material.unit_cost ?? '',
-    supplier_id: material.supplier_id ?? '',
-    location: material.location ?? '',
-    notes: material.notes ?? '',
+    name: tool.name,
+    brand: tool.brand ?? '',
+    model_number: tool.model_number ?? '',
+    serial_number: tool.serial_number ?? '',
+    category_id: tool.category_id ?? '',
+    purchase_date: tool.purchase_date ?? '',
+    purchase_price: tool.purchase_price ?? '',
+    warranty_expires: tool.warranty_expires ?? '',
+    location: tool.location ?? '',
+    manual_url: tool.manual_url ?? '',
+    notes: tool.notes ?? '',
 });
-// submit: form.patch(route('materials.update', material.id))
+// submit: form.patch(route('tools.update', tool.id))
 ```
-Cancel link goes to `route('materials.show', material.id)`.
+Cancel link goes to `route('tools.show', tool.id)`.
 
-Both forms show inline validation errors below each field, and a loading-state submit button.
+Both forms show inline validation errors below each field using `form.errors.{field}`, and a loading-state submit button using `loading={form.processing}`.
 
 #### Acceptance Criteria
-- Create form POSTs to `materials.store`; validation errors display inline
-- Edit form PATCHes to `materials.update`; pre-populated with existing values
+
+- Create form POSTs to `tools.store`; validation errors display inline below each field
+- Edit form PATCHes to `tools.update`; pre-populated with existing tool values
 - All 11 fields render and bind correctly via `form.setData`
 - Cancel links navigate to correct destination
 - Submit button shows loading state while `form.processing` is true
-- Wraps in `AppLayout` with appropriate `Head` title
+- Wraps in `AppLayout` with `<Head title="New Tool" />` (create) and `<Head title="Edit Tool" />` (edit)
 
 ---
 
-### TASK-06: Materials Show / Detail Page
+### TASK-06: Tools Show Page
 
 **Group:** 2 (Frontend)
 **Agent:** frontend-react
-**Depends on:** TASK-01, TASK-02
-**Estimated complexity:** medium
+**Depends on:** TASK-01, TASK-02, TASK-03
+**Estimated complexity:** high
 
 #### Objective
-Replace stub `resources/js/Pages/Materials/Show.jsx` with a full detail page including stock adjustment form and project usage history. Pattern: `Projects/Show.jsx`.
+
+Replace stub `resources/js/Pages/Tools/Show.jsx` with a full detail page. This is the most complex page in Phase 4. It must display tool details, render maintenance schedules with overdue/due-soon status badges, show maintenance log history, and provide two inline forms: one for logging maintenance and one for adding a new schedule.
 
 #### Files to Modify
-- `resources/js/Pages/Materials/Show.jsx` — full replacement
 
-#### Data Contract
-Props: `{ material }`
+- `resources/js/Pages/Tools/Show.jsx` — full replacement
 
-`material` shape after eager loading:
+#### Data Contract (from TASK-01 controller show method)
+
+Props: `{ tool, maintenanceTypes }`
+
+`tool` shape after eager loading:
 ```js
 {
-  id, name, sku, description,
-  unit,            // raw enum string e.g. 'board_foot'
-  unit_cost,       // decimal or null
-  quantity_on_hand, low_stock_threshold,
-  location, notes,
+  id, name, brand, model_number, serial_number,
+  purchase_date,    // ISO date string or null
+  purchase_price,   // decimal string or null
+  warranty_expires, // ISO date string or null
+  location, manual_url, notes,
+  total_usage_hours, // number
   category: { id, name } | null,
-  supplier: { id, name, email, phone, website } | null,
-  projects: [{
-    id, title, slug,
-    pivot: { quantity_used, cost_at_time, notes }
+  maintenance_schedules: [{
+    id, tool_id, maintenance_type, task,
+    interval_days, interval_hours,
+    last_performed_at, next_due_at,
+    notes,
+    is_overdue,  // boolean — from model accessor (TASK-03)
+    is_due_soon, // boolean — from model accessor (TASK-03)
+  }],
+  maintenance_logs: [{
+    id, tool_id, schedule_id, maintenance_type,
+    performed_at, cost, description,
+    created_at,
   }],
 }
 ```
 
-Flash: read `usePage().props.flash` for `flash.success` / `flash.error`.
+`maintenanceTypes`: `[{ value: 'blade_change', label: 'Blade Change' }, ...]`
+
+Flash: `usePage().props.flash` for `flash.success` / `flash.error`.
 
 #### UI Spec
 
-**Page header:**
-- Material name as `<h1>`
-- Edit button: `<Link href={route('materials.edit', material.id)}>`
-- Delete button: `window.confirm` then `router.delete(route('materials.destroy', material.id))`
-
-**Flash messages** (same pattern as Projects/Show):
+**Flash messages** at the top of content area:
 ```jsx
 {flash?.success && <Alert variant="success">{flash.success}</Alert>}
 {flash?.error && <Alert variant="error">{flash.error}</Alert>}
 ```
 
-**Section 1: Overview Card** — two-column definition list:
-- Name, SKU (or `—`), Category (or `—`), Supplier name (or `—`)
-- Unit (the raw string), Location (or `—`)
-- Description (full-width, or `—`)
-- Notes (full-width, or `—`)
+**Page header:**
+- `<h1>` with `tool.name`
+- Subtitle: `tool.brand` if present
+- Edit button: `<Link href={route('tools.edit', tool.id)}>`
+- Delete button: `window.confirm` then `router.delete(route('tools.destroy', tool.id))`, redirect handled server-side
 
-**Section 2: Stock Level Card**
+**Section 1: Tool Details Card**
 
-Top row: large quantity + unit label, e.g. `42.50 Board Foot`
-Low stock badge: red Badge "Low Stock" when `quantity_on_hand <= low_stock_threshold && low_stock_threshold != null`
-Unit cost: `$X.XX per {unit}` or `—`
-Threshold: "Low stock threshold: {low_stock_threshold}" or "No threshold set"
+Two-column definition list (`<dl>`):
+- Name, Brand (`—` if null), Model Number (`—` if null), Serial Number (`—` if null)
+- Category (`—` if null), Location (`—` if null)
+- Purchase Date (formatted as locale date string or `—`), Purchase Price (`$X.XX` or `—`)
+- Warranty Expires (formatted date or `—`), Total Usage Hours (`{tool.total_usage_hours} hrs`)
+- Manual URL (as `<a href={tool.manual_url} target="_blank">View Manual</a>` or `—`)
+- Notes (full-width, `—` if null)
 
-Stock Adjustment sub-form within this card:
-```jsx
-const adjustForm = useForm({ quantity: '', notes: '' });
+**Section 2: Maintenance Schedules Card**
 
-function handleAdjust(e) {
-    e.preventDefault();
-    adjustForm.post(route('materials.adjust-stock', material.id), {
-        onSuccess: () => adjustForm.reset(),
-    });
-}
+Header: "Maintenance Schedules" + "Add Schedule" button that toggles an inline add-schedule form below.
+
+**Schedule table** (if schedules exist):
+
+| Column | Notes |
+|--------|-------|
+| Task | schedule.task |
+| Type | `maintenanceTypes.find(t => t.value === schedule.maintenance_type)?.label` |
+| Interval | `{schedule.interval_days} days` or `{schedule.interval_hours} hrs` |
+| Last Done | Formatted date or `—` |
+| Next Due | Formatted date + status badge |
+| Actions | "Remove" button |
+
+Status badge logic for Next Due column:
+- If `schedule.is_overdue`: red Badge "Overdue"
+- Else if `schedule.is_due_soon`: yellow/amber Badge "Due Soon"
+- No badge otherwise
+
+"Remove" button: `router.delete(route('tools.schedules.destroy', [tool.id, schedule.id]))` with `window.confirm`.
+
+**Add Schedule inline form** (shown/hidden via `useState(false)` toggle on "Add Schedule" button):
+```js
+const scheduleForm = useForm({
+    maintenance_type: '',
+    task: '',
+    interval_days: '',
+    interval_hours: '',
+    notes: '',
+});
+// submit: scheduleForm.post(route('tools.schedules.store', tool.id), { onSuccess: () => { scheduleForm.reset(); setShowScheduleForm(false); } })
 ```
-Fields:
-- `quantity` — number input, step=0.01, placeholder "+10 or -5", signed (no min)
-- `notes` — text input, optional, placeholder "Reason for adjustment"
-- Submit button: "Adjust Stock"
-- Error messages below each field
 
-**Section 3: Project Usage Card**
+Fields in the inline form:
+- `maintenance_type` — Select from `maintenanceTypes`, required
+- `task` — text input, required, placeholder "e.g. Clean blade, check alignment"
+- `interval_days` — number input, min=1, optional, placeholder "e.g. 30"
+- `interval_hours` — number input, step=0.1, optional, placeholder "e.g. 40"
+- Helper text: "Provide at least one interval (days or hours)"
+- `notes` — Textarea, optional, rows=2
+- Submit: "Add Schedule" button + Cancel link that resets form and hides panel
+
+**Empty state** (no schedules): "No maintenance schedules defined. Add one above."
+
+**Section 3: Log Maintenance Card**
+
+Header: "Log Maintenance"
+
+Log form:
+```js
+const logForm = useForm({
+    maintenance_type: '',
+    description: '',
+    performed_at: '',
+    cost: '',
+    schedule_id: '',
+    usage_hours_at: '',
+});
+// submit: logForm.post(route('tools.log-maintenance', tool.id), { onSuccess: () => logForm.reset() })
+```
+
+Fields:
+- `maintenance_type` — Select from `maintenanceTypes`, required
+- `schedule_id` — Select with options from `tool.maintenance_schedules` as `{ value: schedule.id, label: schedule.task }`, placeholder "Not linked to schedule", optional
+- `description` — Textarea, required, rows=3, placeholder "Describe what was done"
+- `performed_at` — date input, required; default to today's date: `new Date().toISOString().split('T')[0]`
+- `cost` — number input, step=0.01, min=0, optional, Label "Cost ($)", placeholder "0.00"
+- `usage_hours_at` — number input, step=0.1, min=0, optional, Label "Current Usage Hours", placeholder "e.g. 150.5"
+- Submit: "Log Maintenance" button
+
+**Section 4: Maintenance History Card**
+
+Header: "Maintenance History"
 
 Table:
-| Project | Qty Used | Unit | Cost at Time | Total Cost | Notes |
-|---------|----------|------|--------------|------------|-------|
-- Project column: `<Link href={'/projects/' + project.slug}>` in amber
-- Cost at Time: `$X.XX` or `—`
-- Total Cost: `cost_at_time * quantity_used` or `—` if either is null
-- Footer row (if any projects): sum of all total costs labeled "Total Material Cost"
-- Empty state: "This material hasn't been used in any projects yet."
+| Date | Type | Description | Cost | Schedule |
+|------|------|-------------|------|----------|
+- Date: `log.performed_at` formatted as locale date string
+- Type: resolved label from `maintenanceTypes`
+- Description: `log.description`
+- Cost: `$X.XX` or `—`
+- Schedule: link the schedule task name if `log.schedule_id` is present by matching against `tool.maintenance_schedules`, otherwise `—`
+
+**Empty state** (no logs): "No maintenance has been logged yet."
 
 #### Acceptance Criteria
-- All material fields display correctly; nulls show `—`
-- Stock adjustment form POSTs to `materials.adjust-stock`, flash message appears after redirect
-- Delete button confirms then performs `router.delete`; redirect to index occurs server-side
-- Projects table renders with pivot data; empty state shows when no projects
-- Flash messages from session display on page load via `usePage().props.flash`
+
+- Tool details section renders all 11 fields; nulls display as `—`; Manual URL links open in new tab
+- Maintenance schedules table renders with correct status badges (overdue = red, due soon = amber, otherwise none)
+- "Remove schedule" triggers confirm dialog then DELETE request
+- Add Schedule form toggles open/closed; submits POST, resets on success
+- Log Maintenance form submits POST to `tools.log-maintenance`; resets on success
+- Maintenance history table renders logs in reverse chronological order; empty state shows when empty
+- Delete tool button confirms then issues `router.delete`
+- Flash messages appear from `usePage().props.flash`
+- Wraps in `AppLayout` with `<Head title={tool.name} />`
 
 ---
 
-### TASK-07: Supplier CRUD Pages
-
-**Group:** 2 (Frontend)
-**Agent:** frontend-react
-**Depends on:** TASK-03
-**Estimated complexity:** medium
-
-#### Objective
-Create all four Supplier pages. No stubs exist — these are new files.
-
-#### Files to Create
-- `resources/js/Pages/Suppliers/Index.jsx`
-- `resources/js/Pages/Suppliers/Show.jsx`
-- `resources/js/Pages/Suppliers/Create.jsx`
-- `resources/js/Pages/Suppliers/Edit.jsx`
-
-#### Data Contracts
-
-Index props: `{ suppliers, filters }`
-- `suppliers`: paginator `{ data[], current_page, last_page, total, links: { prev, next } }`
-- `suppliers.data[n]`: `{ id, name, contact_name, email, phone, website, address, notes }`
-- `filters`: `{ search }`
-
-Show props: `{ supplier }`
-- `supplier.materials_count` available (from `loadCount`)
-
-Create props: none
-Edit props: `{ supplier }`
-
-#### Suppliers/Index.jsx
-
-Same layout structure as Materials/Index:
-- Header: "Suppliers" + count + "+ New Supplier" button to `/suppliers/create`
-- Search input (debounced 300ms, `router.get('/suppliers', params, { preserveState: true, replace: true })`)
-- Table columns: Name | Contact | Email | Phone | Actions ("Edit" link to `/suppliers/{id}/edit`)
-- Pagination (prev/next)
-- Empty state: "No suppliers found."
-
-#### Suppliers/Create.jsx and Suppliers/Edit.jsx
-
-Single-card form with all 7 supplier fields:
-- `name` — text input, required
-- `contact_name` — text input, optional
-- `email` — email input, optional
-- `phone` — text input, optional
-- `website` — url input, optional, placeholder "https://..."
-- `address` — Textarea, optional, rows=3
-- `notes` — Textarea, optional, rows=4
-
-Create: `form.post(route('suppliers.store'))`. Cancel: `route('suppliers.index')`.
-Edit: `form.patch(route('suppliers.update', supplier.id))`. Cancel: `route('suppliers.show', supplier.id)`.
-
-Edit pre-populates all fields from `supplier.*`, using `?? ''` for nullables.
-
-#### Suppliers/Show.jsx
-
-- Header: supplier name, Edit button, Delete button (confirm + `router.delete(route('suppliers.destroy', supplier.id))`)
-- Flash messages: same Alert pattern as other show pages
-- Detail card (two-column): Name, Contact Name, Email (as mailto link if present), Phone, Website (as `<a href>` if present), Address (full-width), Notes (full-width)
-- Materials count callout: "X material(s) sourced from this supplier" using `supplier.materials_count`
-
-#### Acceptance Criteria
-- All 4 pages render at correct Inertia component paths
-- Index search filter works with debounce and URL query string
-- Create form POSTs, Edit form PATCHes, both redirect on success
-- Show page displays all fields; Delete hard-deletes and redirects to index
-- Wrap in `AppLayout` with `Head` title on all pages
+## Group 3 — Tests (depends on Group 1 completions)
 
 ---
 
-### Group 3 — Tests (depends on Group 1 completions)
-
----
-
-### TASK-08: Material Controller Feature Tests
+### TASK-07: Tool Controller and Maintenance Feature Tests
 
 **Group:** 3 (Tests)
 **Agent:** backend-laravel
-**Depends on:** TASK-01, TASK-02
+**Depends on:** TASK-01, TASK-02, TASK-03
 **Estimated complexity:** medium
 
 #### Objective
-Expand `tests/Feature/MaterialControllerTest.php`. Replace the existing 4 placeholder tests entirely with a comprehensive test suite for every controller action plus the `lowStock` model scope.
+
+Fully replace `tests/Feature/ToolControllerTest.php` with a comprehensive test suite covering all controller actions, maintenance logging, schedule management, and the `MaintenanceSchedule` model scopes. Follow the `MaterialControllerTest.php` pattern exactly for structure and assertion style.
 
 #### Files to Modify
-- `tests/Feature/MaterialControllerTest.php` — full replacement
+
+- `tests/Feature/ToolControllerTest.php` — full replacement
 
 #### Files to Read First
-- `tests/Feature/ProjectControllerTest.php` — follow exact patterns
-- `app/Http/Controllers/MaterialController.php` (post TASK-01)
-- `app/Models/Material.php` (post TASK-02)
-- `database/factories/MaterialFactory.php`, `SupplierFactory.php`, `MaterialCategoryFactory.php`
 
-#### Required Tests
-
-**Auth/Access:**
-```php
-#[Test]
-public function guest_is_redirected_from_materials(): void
-// GET /materials → assertRedirect('/login')
-```
-
-**Index:**
-```php
-#[Test]
-public function authenticated_user_can_view_materials_index(): void
-// assertInertia: component 'Materials/Index', has 'materials', 'filters', 'categories', 'suppliers'
-
-#[Test]
-public function index_filters_by_category(): void
-// Create 2 materials with different categories, filter by one, assert only matching returned
-
-#[Test]
-public function index_filters_by_supplier(): void
-// Create 2 materials with different suppliers, filter by one
-
-#[Test]
-public function index_search_returns_materials(): void
-// Create material with known name, search=name, assert 200 (Scout with database driver)
-```
-
-**Create:**
-```php
-#[Test]
-public function create_page_returns_units_categories_and_suppliers(): void
-// assertInertia: has 'units', 'categories', 'suppliers'
-```
-
-**Store:**
-```php
-#[Test]
-public function store_creates_material_and_redirects_to_show(): void
-// POST /materials with valid data → assertDatabaseHas, assertRedirect to materials.show
-
-#[Test]
-public function store_requires_name(): void
-// POST without name → assertSessionHasErrors(['name'])
-
-#[Test]
-public function store_requires_unit(): void
-// POST without unit → assertSessionHasErrors(['unit'])
-
-#[Test]
-public function store_rejects_invalid_unit_value(): void
-// POST with unit='invalid' → assertSessionHasErrors(['unit'])
-```
-
-**Show:**
-```php
-#[Test]
-public function show_returns_material_with_component(): void
-// GET /materials/{id} → assertInertia: component 'Materials/Show', has 'material'
-```
-
-**Edit:**
-```php
-#[Test]
-public function edit_returns_material_with_options(): void
-// GET /materials/{id}/edit → assertInertia: has 'material', 'units', 'categories', 'suppliers'
-```
-
-**Update:**
-```php
-#[Test]
-public function update_saves_changes_and_redirects_to_show(): void
-// PATCH /materials/{id} → assertDatabaseHas updated value, assertRedirect to show
-
-#[Test]
-public function update_with_invalid_unit_returns_error(): void
-// PATCH with unit='bad' → assertSessionHasErrors(['unit'])
-```
-
-**Destroy:**
-```php
-#[Test]
-public function destroy_soft_deletes_material(): void
-// DELETE /materials/{id} → assertSoftDeleted('materials', ['id' => $id]), assertRedirect to index
-```
-
-**Adjust Stock:**
-```php
-#[Test]
-public function adjust_stock_increments_quantity(): void
-// Create material with quantity_on_hand=10.00
-// POST /materials/{id}/adjust with quantity=5
-// assertDatabaseHas('materials', ['id' => $id, 'quantity_on_hand' => 15.00])
-
-#[Test]
-public function adjust_stock_decrements_quantity(): void
-// Create material with quantity_on_hand=10.00
-// POST with quantity=-3
-// assertDatabaseHas: quantity_on_hand=7.00
-
-#[Test]
-public function adjust_stock_cannot_go_below_zero(): void
-// Create material with quantity_on_hand=5.00
-// POST with quantity=-100
-// assertDatabaseHas: quantity_on_hand=0.00
-
-#[Test]
-public function adjust_stock_requires_quantity(): void
-// POST without quantity → assertSessionHasErrors(['quantity'])
-```
-
-**Low Stock Scope (model-level test, no HTTP):**
-```php
-#[Test]
-public function low_stock_scope_returns_only_materials_at_or_below_threshold(): void
-// Material A: quantity_on_hand=2, low_stock_threshold=5 → LOW (should appear)
-// Material B: quantity_on_hand=10, low_stock_threshold=5 → OK (should not appear)
-// Material C: quantity_on_hand=1, low_stock_threshold=null → no threshold (should not appear)
-// Assert: Material::lowStock()->count() === 1
-// Assert: Material::lowStock()->first()->id === $materialA->id
-```
+- `tests/Feature/MaterialControllerTest.php` — primary pattern reference
+- `app/Http/Controllers/ToolController.php` (post TASK-01 and TASK-02)
+- `app/Models/MaintenanceSchedule.php` (post TASK-03)
+- `database/factories/ToolFactory.php`, `ToolCategoryFactory.php`, `MaintenanceScheduleFactory.php`, `MaintenanceLogFactory.php`
 
 #### Test Class Structure
+
 ```php
-class MaterialControllerTest extends TestCase
+class ToolControllerTest extends TestCase
 {
     use RefreshDatabase;
 
@@ -852,164 +798,232 @@ class MaterialControllerTest extends TestCase
 }
 ```
 
-#### Acceptance Criteria
-- All tests pass: `./vendor/bin/sail artisan test --filter=MaterialControllerTest`
-- Every controller action covered with at least one happy-path test
-- Validation tests use `assertSessionHasErrors`
-- Soft delete test uses `assertSoftDeleted`
-- Low stock scope tested directly on the model (no HTTP call)
-- No hardcoded IDs — always use factories
-
----
-
-### TASK-09: Supplier Controller Feature Tests
-
-**Group:** 3 (Tests)
-**Agent:** backend-laravel
-**Depends on:** TASK-03
-**Estimated complexity:** low-medium
-
-#### Objective
-Create a new feature test file for `SupplierController` covering all 7 resource actions. Verify hard-delete behavior and DB cascade nullification on materials.
-
-#### Files to Create
-- `tests/Feature/SupplierControllerTest.php`
-
-#### Files to Read First
-- `tests/Feature/ProjectControllerTest.php` — pattern reference
-- `app/Http/Controllers/SupplierController.php` (post TASK-03)
-- `database/factories/SupplierFactory.php`, `MaterialFactory.php`
-
 #### Required Tests
 
-**Auth:**
+**Auth / Access:**
 ```php
 #[Test]
-public function guest_is_redirected_from_suppliers(): void
-// GET /suppliers → assertRedirect('/login')
+public function guest_is_redirected_from_tools(): void
+// GET /tools → assertRedirect('/login')
 ```
 
 **Index:**
 ```php
 #[Test]
-public function authenticated_user_can_view_suppliers_index(): void
-// assertInertia: component 'Suppliers/Index', has 'suppliers', 'filters'
+public function authenticated_user_can_view_tools_index(): void
+// assertInertia: component 'Tools/Index', has 'tools', 'filters', 'categories'
 
 #[Test]
-public function index_search_filters_by_name(): void
-// Create 2 suppliers with different names, GET /suppliers?search=name1, assert 200
+public function index_filters_by_category(): void
+// Create ToolCategory A and B, create one tool per category
+// GET /tools?category={categoryA->id}
+// assertInertia: has('tools.data', 1)
+
+#[Test]
+public function index_search_returns_tools(): void
+// Create tool with known unique name, GET /tools?search={name}
+// assertOk() — Scout database driver returns results
 ```
 
 **Create:**
 ```php
 #[Test]
-public function create_page_renders(): void
-// assertInertia: component 'Suppliers/Create'
+public function create_page_returns_categories_and_maintenance_types(): void
+// GET /tools/create
+// assertInertia: component 'Tools/Create', has 'categories', has 'maintenanceTypes'
 ```
 
 **Store:**
 ```php
 #[Test]
-public function store_creates_supplier_and_redirects_to_show(): void
-// POST /suppliers with name → assertDatabaseHas, assertRedirect to suppliers.show
+public function store_creates_tool_and_redirects_to_show(): void
+// POST /tools with valid data (name required, others optional)
+// assertDatabaseHas('tools', ['name' => 'Test Tool'])
+// assertRedirect to tools.show
 
 #[Test]
 public function store_requires_name(): void
-// POST without name → assertSessionHasErrors(['name'])
+// POST /tools without name → assertSessionHasErrors(['name'])
 
 #[Test]
-public function store_rejects_invalid_email(): void
-// POST with email='not-an-email' → assertSessionHasErrors(['email'])
+public function store_rejects_invalid_category_id(): void
+// POST /tools with category_id='not-a-valid-ulid' → assertSessionHasErrors(['category_id'])
 
 #[Test]
-public function store_rejects_invalid_website_url(): void
-// POST with website='not-a-url' → assertSessionHasErrors(['website'])
+public function store_rejects_invalid_manual_url(): void
+// POST /tools with manual_url='not-a-url' → assertSessionHasErrors(['manual_url'])
 ```
 
 **Show:**
 ```php
 #[Test]
-public function show_returns_supplier(): void
-// assertInertia: component 'Suppliers/Show', has 'supplier'
+public function show_returns_tool_with_maintenance_data(): void
+// Tool::factory()->create()
+// GET /tools/{tool->id}
+// assertInertia: component 'Tools/Show', has 'tool', has 'maintenanceTypes'
 ```
 
 **Edit:**
 ```php
 #[Test]
-public function edit_returns_supplier(): void
-// assertInertia: component 'Suppliers/Edit', has 'supplier'
+public function edit_returns_tool_with_categories(): void
+// GET /tools/{tool->id}/edit
+// assertInertia: component 'Tools/Edit', has 'tool', has 'categories'
 ```
 
 **Update:**
 ```php
 #[Test]
 public function update_saves_changes_and_redirects_to_show(): void
-// PATCH /suppliers/{id} → assertDatabaseHas updated name, assertRedirect to show
+// PATCH /tools/{tool->id} with ['name' => 'Updated Name']
+// assertDatabaseHas('tools', ['id' => $tool->id, 'name' => 'Updated Name'])
+// assertRedirect to tools.show
 
 #[Test]
-public function update_with_invalid_email_returns_error(): void
-// PATCH with email='bad' → assertSessionHasErrors(['email'])
+public function update_with_invalid_purchase_price_returns_error(): void
+// PATCH with ['purchase_price' => 'not-a-number'] → assertSessionHasErrors(['purchase_price'])
 ```
 
 **Destroy:**
 ```php
 #[Test]
-public function destroy_hard_deletes_supplier(): void
-// DELETE /suppliers/{id} → assertDatabaseMissing('suppliers', ['id' => $id])
-// NOT assertSoftDeleted — this is a hard delete
+public function destroy_soft_deletes_tool(): void
+// DELETE /tools/{tool->id}
+// assertSoftDeleted('tools', ['id' => $tool->id])
+// assertRedirect to tools.index
+```
+
+**Log Maintenance:**
+```php
+#[Test]
+public function log_maintenance_creates_log_entry(): void
+// POST /tools/{tool->id}/maintenance with valid data
+// assertDatabaseHas('maintenance_logs', ['tool_id' => $tool->id, 'description' => 'Test maintenance'])
+// assertRedirect to tools.show
 
 #[Test]
-public function destroy_nullifies_supplier_id_on_related_materials(): void
-// Create supplier, create material with that supplier_id
-// DELETE supplier
-// assertDatabaseHas('materials', ['id' => $material->id, 'supplier_id' => null])
-// Verify material still exists (only supplier_id is nulled via DB cascade)
+public function log_maintenance_requires_maintenance_type(): void
+// POST without maintenance_type → assertSessionHasErrors(['maintenance_type'])
+
+#[Test]
+public function log_maintenance_requires_description(): void
+// POST without description → assertSessionHasErrors(['description'])
+
+#[Test]
+public function log_maintenance_requires_performed_at(): void
+// POST without performed_at → assertSessionHasErrors(['performed_at'])
+
+#[Test]
+public function log_maintenance_updates_schedule_next_due_at(): void
+// Create tool, create MaintenanceSchedule with interval_days=30 for that tool
+// POST /tools/{tool->id}/maintenance with schedule_id={schedule->id}, performed_at='2026-03-01'
+// Reload schedule from DB
+// Assert schedule->last_performed_at == '2026-03-01'
+// Assert schedule->next_due_at == '2026-03-31'
+```
+
+**Schedule Management:**
+```php
+#[Test]
+public function store_schedule_creates_maintenance_schedule(): void
+// POST /tools/{tool->id}/schedules with valid data
+// assertDatabaseHas('maintenance_schedules', ['tool_id' => $tool->id, 'task' => 'Sharpen blade'])
+// assertRedirect to tools.show
+
+#[Test]
+public function store_schedule_requires_task(): void
+// POST without task → assertSessionHasErrors(['task'])
+
+#[Test]
+public function store_schedule_requires_at_least_one_interval(): void
+// POST with task but no interval_days and no interval_hours
+// assertSessionHasErrors(['interval_days'])
+
+#[Test]
+public function destroy_schedule_hard_deletes_schedule(): void
+// Create MaintenanceSchedule for tool
+// DELETE /tools/{tool->id}/schedules/{schedule->id}
+// assertDatabaseMissing('maintenance_schedules', ['id' => $schedule->id])
+// assertRedirect to tools.show
+```
+
+**MaintenanceSchedule Model Scopes (no HTTP; model-level tests):**
+```php
+#[Test]
+public function overdue_scope_returns_schedules_with_past_next_due_at(): void
+// Create schedule with next_due_at = now()->subDay() → overdue
+// Create schedule with next_due_at = now()->addDays(14) → not overdue
+// Create schedule with next_due_at = null → excluded
+// Assert MaintenanceSchedule::overdue()->count() === 1
+
+#[Test]
+public function due_soon_scope_returns_schedules_within_seven_days(): void
+// Create schedule with next_due_at = now()->addDays(3) → due soon
+// Create schedule with next_due_at = now()->addDays(14) → not due soon
+// Create schedule with next_due_at = now()->subDay() → overdue, not due soon
+// Create schedule with next_due_at = null → excluded
+// Assert MaintenanceSchedule::dueSoon()->count() === 1
+
+#[Test]
+public function is_overdue_returns_correct_boolean(): void
+// $schedule->next_due_at = now()->subDay(); → isOverdue() === true
+// $schedule->next_due_at = now()->addDay(); → isOverdue() === false
+// $schedule->next_due_at = null; → isOverdue() === false
+
+#[Test]
+public function is_due_soon_returns_correct_boolean(): void
+// next_due_at = now()->addDays(3) → isDueSoon() === true
+// next_due_at = now()->addDays(14) → isDueSoon() === false
+// next_due_at = now()->subDay() → isDueSoon() === false (overdue, not due soon)
+// next_due_at = null → isDueSoon() === false
 ```
 
 #### Acceptance Criteria
-- All tests pass: `./vendor/bin/sail artisan test --filter=SupplierControllerTest`
-- Destroy test uses `assertDatabaseMissing` (hard delete, not soft)
-- Cascade null test verifies DB `nullOnDelete()` foreign key behavior on the materials table
-- No hardcoded IDs — all factories
+
+- All tests pass: `./vendor/bin/sail artisan test --filter=ToolControllerTest`
+- Every controller action covered with at least one happy-path test
+- Validation tests use `assertSessionHasErrors`
+- Soft delete on tool uses `assertSoftDeleted`; hard delete on schedule uses `assertDatabaseMissing`
+- `log_maintenance_updates_schedule_next_due_at` verifies precise date arithmetic
+- All four scope/helper tests make direct model assertions without HTTP calls
+- No hardcoded IDs — always use factories
+- `setUp` uses `$this->user = User::factory()->create()` pattern; all requests use `actingAs($this->user)`
 
 ---
 
 ## Dependency Graph
 
 ```
-TASK-01 (MaterialController CRUD) ──┐
-                                    ├──► TASK-04 (Materials Index Page)
-                                    ├──► TASK-05 (Create/Edit Forms)
+TASK-01 (ToolController CRUD) ──────┐
+                                    ├──► TASK-04 (Tools Index Page)
+                                    ├──► TASK-05 (Tools Create/Edit Forms)
                                     │
-TASK-02 (Stock Adjustment) ─────────┼──► TASK-06 (Show Page)
+TASK-02 (Maintenance Backend) ──────┼──► TASK-06 (Tools Show Page)
                                     │
-                                    └──► TASK-08 (Material Tests)
-
-TASK-03 (Supplier Backend) ─────────┬──► TASK-07 (Supplier Pages)
-                                    └──► TASK-09 (Supplier Tests)
+TASK-03 (Model Scopes) ─────────────┤
+                                    │
+                                    └──► TASK-07 (Tool Tests)
 ```
 
 **Group 1** tasks (01, 02, 03) have no dependencies and can run in parallel.
-**Group 2** tasks (04–07) require their backend task(s) to be complete first.
-**Group 3** tasks (08, 09) require the corresponding backend tasks.
+**Group 2** tasks (04–06) each require their specific backend task(s) to be complete first. TASK-06 depends on TASK-01, TASK-02, and TASK-03 because the Show page uses schedule sub-resource routes (TASK-02) and renders `is_overdue`/`is_due_soon` accessors (TASK-03).
+**Group 3** task (07) requires all three Group 1 tasks to be complete.
 
 ---
 
 ## File Ownership Map
 
-| Task | Files Exclusively Owned |
-|------|------------------------|
-| TASK-01 | `app/Http/Controllers/MaterialController.php` (index, create, store, show, edit, update, destroy); `routes/web.php` (materials route change) |
-| TASK-02 | `app/Http/Controllers/MaterialController.php` (adjustStock method); `app/Models/Material.php` (scope + helpers) |
-| TASK-03 | `app/Http/Controllers/SupplierController.php` (create); `app/Http/Requests/StoreSupplierRequest.php` (create); `app/Http/Requests/UpdateSupplierRequest.php` (create); `routes/web.php` (supplier route addition) |
-| TASK-04 | `resources/js/Pages/Materials/Index.jsx` |
-| TASK-05 | `resources/js/Pages/Materials/Create.jsx`; `resources/js/Pages/Materials/Edit.jsx` |
-| TASK-06 | `resources/js/Pages/Materials/Show.jsx` |
-| TASK-07 | `resources/js/Pages/Suppliers/Index.jsx` (create); `resources/js/Pages/Suppliers/Show.jsx` (create); `resources/js/Pages/Suppliers/Create.jsx` (create); `resources/js/Pages/Suppliers/Edit.jsx` (create) |
-| TASK-08 | `tests/Feature/MaterialControllerTest.php` |
-| TASK-09 | `tests/Feature/SupplierControllerTest.php` (create) |
+| Task | Files Modified / Created |
+|------|--------------------------|
+| TASK-01 | `app/Http/Controllers/ToolController.php` (index, create, store, show, edit, update, destroy methods); `routes/web.php` (remove `.except(['destroy'])` from tools resource route) |
+| TASK-02 | `app/Http/Controllers/ToolController.php` (logMaintenance, storeSchedule, destroySchedule methods); `app/Http/Requests/StoreMaintenanceScheduleRequest.php` (create new); `routes/web.php` (add 2 schedule sub-resource routes) |
+| TASK-03 | `app/Models/MaintenanceSchedule.php` (add scopes, helpers, appends) |
+| TASK-04 | `resources/js/Pages/Tools/Index.jsx` |
+| TASK-05 | `resources/js/Pages/Tools/Create.jsx`; `resources/js/Pages/Tools/Edit.jsx` |
+| TASK-06 | `resources/js/Pages/Tools/Show.jsx` |
+| TASK-07 | `tests/Feature/ToolControllerTest.php` |
 
-> **Note on shared files:** TASK-01 and TASK-02 both modify `MaterialController.php` — TASK-01 owns methods 1–7 stub replacements, TASK-02 owns the `adjustStock` method. TASK-03 adds lines to `routes/web.php` in a non-overlapping location from TASK-01's change. If executing with a single agent, apply in order: 01 → 02 → 03.
+> **Note on shared files:** TASK-01 and TASK-02 both write to `ToolController.php` — TASK-01 owns methods 1–7 (index through destroy), TASK-02 adds three new methods (logMaintenance, storeSchedule, destroySchedule). TASK-01 and TASK-02 both touch `routes/web.php` in non-overlapping locations (TASK-01 modifies the existing `Route::resource` line; TASK-02 adds two new route registrations below it). If executing sequentially with a single agent, apply in order: TASK-01 → TASK-02 → TASK-03.
 
 ---
 
@@ -1017,14 +1031,12 @@ TASK-03 (Supplier Backend) ─────────┬──► TASK-07 (Supp
 
 | Task ID | Title | Group | Agent | Depends On | Complexity |
 |---------|-------|-------|-------|------------|------------|
-| TASK-01 | MaterialController CRUD | 1 | backend-laravel | — | medium |
-| TASK-02 | Stock Adjustment Backend | 1 | backend-laravel | — | low |
-| TASK-03 | Supplier CRUD Backend | 1 | backend-laravel | — | medium |
-| TASK-04 | Materials Index Page | 2 | frontend-react | TASK-01 | medium |
-| TASK-05 | Materials Create/Edit Forms | 2 | frontend-react | TASK-01 | medium |
-| TASK-06 | Materials Show Page | 2 | frontend-react | TASK-01, TASK-02 | medium |
-| TASK-07 | Supplier CRUD Pages | 2 | frontend-react | TASK-03 | medium |
-| TASK-08 | Material Controller Tests | 3 | backend-laravel | TASK-01, TASK-02 | medium |
-| TASK-09 | Supplier Controller Tests | 3 | backend-laravel | TASK-03 | low-medium |
+| TASK-01 | ToolController CRUD | 1 | backend-laravel | — | medium |
+| TASK-02 | Maintenance Logging + Schedule Backend | 1 | backend-laravel | — | medium |
+| TASK-03 | MaintenanceSchedule Model Scopes | 1 | backend-laravel | — | low |
+| TASK-04 | Tools Index Page | 2 | frontend-react | TASK-01 | medium |
+| TASK-05 | Tools Create/Edit Forms | 2 | frontend-react | TASK-01 | medium |
+| TASK-06 | Tools Show Page | 2 | frontend-react | TASK-01, TASK-02, TASK-03 | high |
+| TASK-07 | Tool Controller + Maintenance Tests | 3 | backend-laravel | TASK-01, TASK-02, TASK-03 | medium |
 
-**Total tasks: 9** (within the 12-task maximum)
+**Total tasks: 7** (within the 8–10 target range)

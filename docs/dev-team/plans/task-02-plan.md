@@ -1,24 +1,23 @@
-# Task 02 Plan: Stock Adjustment Backend
+# Task 02 Plan: Maintenance Logging + Schedule Management Backend
 
-**Task ID:** 02
+**Task ID:** TASK-02
 **Domain:** backend
-**Feature:** `MaterialController::adjustStock()` + `Material` model helpers
+**Feature:** `ToolController::logMaintenance()`, `storeSchedule()`, `destroySchedule()` + `StoreMaintenanceScheduleRequest`
 **Status:** pending
 
 ---
 
 ## 1. Approach
 
-Two targeted changes following the project's fat-models / thin-controllers convention:
+Three targeted changes following the fat-models / thin-controllers convention:
 
-1. **`Material` model** — add three methods:
-   - `scopeLowStock(Builder $query)` — Eloquent query scope to filter materials that are at or below their low-stock threshold.
-   - `isLowStock(): bool` — instance helper that returns whether the current model instance is in a low-stock state.
-   - `adjustQuantity(float $delta): void` — mutates `quantity_on_hand` (floored at 0) and saves the model.
+1. **`StoreMaintenanceScheduleRequest`** — new form request class that validates the fields required to create a `MaintenanceSchedule`, with a `withValidator` hook enforcing that at least one interval field is supplied.
 
-2. **`MaterialController::adjustStock()`** — replace the stub with the real implementation. It accepts the already-existing `AdjustStockRequest` (which validates `quantity` as required numeric and `notes` as nullable string), delegates mutation to `$material->adjustQuantity()`, builds a human-readable flash message using the `MaterialUnit::label()` method on the model's cast `unit` attribute, and redirects to `materials.show`.
+2. **`ToolController`** — implement the existing `logMaintenance` stub and add two new methods: `storeSchedule` and `destroySchedule`. All three delegate to model relationships rather than issuing raw queries.
 
-No new files need to be created. No migrations, no new routes, no frontend changes are required.
+3. **`routes/web.php`** — register two new sub-resource routes for schedule creation and deletion, inside the existing `auth` + `verified` middleware group alongside the existing `tools.log-maintenance` route.
+
+No new migrations, models, or services are required. All relationships, fillable arrays, casts, and enum definitions are already in place.
 
 ---
 
@@ -26,72 +25,91 @@ No new files need to be created. No migrations, no new routes, no frontend chang
 
 | File | Action | Notes |
 |------|--------|-------|
-| `app/Models/Material.php` | Modify | Add `scopeLowStock`, `isLowStock`, `adjustQuantity`; add `Builder` import |
-| `app/Http/Controllers/MaterialController.php` | Modify | Replace stub `adjustStock` body; swap `Request` type-hint for `AdjustStockRequest` |
+| `app/Http/Controllers/ToolController.php` | Modify | Implement `logMaintenance` stub; add `storeSchedule` and `destroySchedule` methods; add 4 imports |
+| `routes/web.php` | Modify | Add 2 schedule sub-resource route registrations inside the auth group |
 
-No files are created. No other files are changed.
+## 3. Files to Create
+
+| File | Action | Notes |
+|------|--------|-------|
+| `app/Http/Requests/StoreMaintenanceScheduleRequest.php` | Create | New form request; validates 5 fields; custom `withValidator` for interval check |
 
 ---
 
-## 3. Exact Implementation
+## 4. Exact Implementation
 
-### 3.1 `app/Models/Material.php`
-
-Add one import at the top of the file:
+### 4.1 `app/Http/Requests/StoreMaintenanceScheduleRequest.php` (new file)
 
 ```php
-use Illuminate\Database\Eloquent\Builder;
-```
+<?php
 
-Add three methods to the `Material` class body (placement: after the `tags()` relation, before the closing brace):
+namespace App\Http\Requests;
 
-```php
-public function scopeLowStock(Builder $query): Builder
+use App\Enums\MaintenanceType;
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
+
+class StoreMaintenanceScheduleRequest extends FormRequest
 {
-    return $query->whereNotNull('low_stock_threshold')
-        ->whereColumn('quantity_on_hand', '<=', 'low_stock_threshold');
-}
+    public function authorize(): bool
+    {
+        return true;
+    }
 
-public function isLowStock(): bool
-{
-    return $this->low_stock_threshold !== null
-        && $this->quantity_on_hand <= $this->low_stock_threshold;
-}
+    public function rules(): array
+    {
+        return [
+            'maintenance_type' => ['required', Rule::enum(MaintenanceType::class)],
+            'task'             => ['required', 'string', 'max:255'],
+            'interval_days'    => ['nullable', 'integer', 'min:1'],
+            'interval_hours'   => ['nullable', 'numeric', 'min:0.1'],
+            'notes'            => ['nullable', 'string'],
+        ];
+    }
 
-public function adjustQuantity(float $delta): void
-{
-    $this->quantity_on_hand = max(0, $this->quantity_on_hand + $delta);
-    $this->save();
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($v) {
+            if (empty($this->interval_days) && empty($this->interval_hours)) {
+                $v->errors()->add('interval_days', 'At least one interval (days or hours) is required.');
+            }
+        });
+    }
 }
 ```
 
-The `scopeLowStock` scope uses `whereColumn` to compare two columns in the same row, which is translated to a SQL `WHERE quantity_on_hand <= low_stock_threshold` predicate. `whereNotNull('low_stock_threshold')` excludes materials for which no threshold has been set.
+**Rationale:**
 
-`adjustQuantity` uses `max(0, ...)` to ensure stock never goes negative — a business rule constraint that lives in the model rather than in the controller or request.
+- `Rule::enum(MaintenanceType::class)` mirrors the pattern already in `LogMaintenanceRequest` and correctly rejects values not present in the 8-case backed enum.
+- `interval_days` is `integer` with `min:1` — a day-interval of zero is meaningless.
+- `interval_hours` is `numeric` (not `integer`) with `min:0.1` because fractional hours (e.g., 0.5 for every 30 minutes of use) are valid.
+- The `withValidator` hook fires after the core rules pass, so it only runs when types are already correct. The error is placed on `interval_days` (the more prominent of the two fields) so the frontend can highlight a specific field rather than showing a top-level error.
+- `notes` is nullable string with no max length, matching the `text` column in the migration.
+- No `tool_id` field is validated here because `tool_id` is injected via route model binding (`$tool->maintenanceSchedules()->create(...)`) — not from the request body.
 
-`isLowStock` checks the instance state without hitting the database, suitable for conditional rendering after an adjust operation or in a policy check.
+---
 
-### 3.2 `app/Http/Controllers/MaterialController.php`
+### 4.2 `app/Http/Controllers/ToolController.php` — imports to add
 
-Replace the existing import:
+Add four imports to the existing import block (keeping the existing `Tool`, `Request`, `Inertia`, `Response`, `RedirectResponse` imports):
 
 ```php
-use Illuminate\Http\Request;
+use App\Http\Requests\LogMaintenanceRequest;
+use App\Http\Requests\StoreMaintenanceScheduleRequest;
+use App\Models\MaintenanceSchedule;
+use Carbon\Carbon;
 ```
 
-with:
+`Carbon\Carbon` is required for `Carbon::parse($data['performed_at'])` inside `logMaintenance`. The `Carbon` facade alias is available in the app, but explicit class import is preferable and matches the style used in `ProjectController` for date arithmetic.
+
+---
+
+### 4.3 `app/Http/Controllers/ToolController.php` — implement `logMaintenance`
+
+Replace the existing stub:
 
 ```php
-use App\Http\Requests\AdjustStockRequest;
-use Illuminate\Http\Request;
-```
-
-(The plain `Request` import is retained because the existing `store` and `update` stubs still reference it. Only `adjustStock`'s signature changes.)
-
-Replace the stub method body:
-
-```php
-public function adjustStock(Request $request, Material $material): RedirectResponse
+public function logMaintenance(Request $request, Tool $tool): RedirectResponse
 {
     return redirect()->back();
 }
@@ -100,52 +118,114 @@ public function adjustStock(Request $request, Material $material): RedirectRespo
 with:
 
 ```php
-public function adjustStock(AdjustStockRequest $request, Material $material): RedirectResponse
+public function logMaintenance(LogMaintenanceRequest $request, Tool $tool): RedirectResponse
 {
     $data = $request->validated();
-    $delta = (float) $data['quantity'];
-    $material->adjustQuantity($delta);
-    $direction = $delta >= 0 ? 'Added' : 'Removed';
-    $abs = abs($delta);
-    $unitLabel = $material->unit->label();
-    $after = $material->quantity_on_hand;
-    $message = "{$direction} {$abs} {$unitLabel} — stock now: {$after}";
-    if (!empty($data['notes'])) {
-        $message .= " ({$data['notes']})";
+
+    $tool->maintenanceLogs()->create([
+        'schedule_id'      => $data['schedule_id'] ?? null,
+        'maintenance_type' => $data['maintenance_type'],
+        'description'      => $data['description'],
+        'performed_at'     => $data['performed_at'],
+        'cost'             => $data['cost'] ?? null,
+        'usage_hours_at'   => $data['usage_hours_at'] ?? null,
+    ]);
+
+    if (!empty($data['schedule_id'])) {
+        $schedule = MaintenanceSchedule::find($data['schedule_id']);
+        if ($schedule) {
+            $performedAt = Carbon::parse($data['performed_at']);
+            $schedule->last_performed_at = $performedAt;
+
+            if ($schedule->interval_days) {
+                $schedule->next_due_at = $performedAt->copy()->addDays($schedule->interval_days);
+            } elseif ($schedule->interval_hours) {
+                $schedule->next_due_at = $performedAt->copy()->addHours($schedule->interval_hours);
+            } else {
+                $schedule->next_due_at = null;
+            }
+
+            $schedule->save();
+        }
     }
-    return redirect()->route('materials.show', $material)->with('success', $message);
+
+    if (!empty($data['usage_hours_at'])) {
+        $tool->update(['total_usage_hours' => $data['usage_hours_at']]);
+    }
+
+    return redirect()->route('tools.show', $tool)
+        ->with('success', 'Maintenance logged successfully.');
 }
 ```
 
-Note: `$material->quantity_on_hand` is read *after* `adjustQuantity()` has called `save()`, so it reflects the updated database value.
+**Line-by-line rationale:**
+
+- `$tool->maintenanceLogs()->create([...])` — uses the `HasMany` relationship on `Tool` so `tool_id` is automatically set; avoids passing `tool_id` from the request (it comes from route model binding, not user input).
+- `usage_hours_at` is included in the log create array because it is in `MaintenanceLog::$fillable`. The log records the odometer reading at the time of maintenance, which is separate from the tool's running total.
+- The `schedule_id` presence check uses `!empty()` rather than `isset()` because `empty('')` and `empty(null)` both return true. The validated field is nullable, so it may be absent from the validated array or explicitly null.
+- `MaintenanceSchedule::find($data['schedule_id'])` is used rather than `$tool->maintenanceSchedules()->find(...)` to avoid adding a `whereHas` constraint. The `LogMaintenanceRequest` already validates `schedule_id` via `Rule::exists('maintenance_schedules', 'id')`, so the record is guaranteed to exist; the `if ($schedule)` guard is a defensive belt-and-suspenders check.
+- `interval_days` is preferred over `interval_hours` when both are set on a schedule. This is an explicit ordering decision: day-based intervals are the common case for shop tools (e.g., "clean every 30 days"), and hours-based are a secondary precision mechanism.
+- `$performedAt->copy()->addDays(...)` — `copy()` is called so the original `$performedAt` object is not mutated before assignment to `last_performed_at`.
+- `$tool->update(['total_usage_hours' => $data['usage_hours_at']])` sets the tool's running total to the snapshot provided, not increments it. This is an odometer-style update: "the tool now has X hours on it total", not "add X hours to the counter."
 
 ---
 
-## 4. Decisions and Rationale
+### 4.4 `app/Http/Controllers/ToolController.php` — add `storeSchedule`
 
-### Decision 1: Keep business logic in the model (`adjustQuantity`)
+Add after `logMaintenance`:
 
-The governance rules mandate "fat models, thin controllers." The `max(0, ...)` floor is a business rule: stock cannot go negative. Placing it in `adjustQuantity()` on the model ensures any future caller (a queued job, an Artisan command, another controller) cannot accidentally produce negative stock by calling the model directly.
+```php
+public function storeSchedule(StoreMaintenanceScheduleRequest $request, Tool $tool): RedirectResponse
+{
+    $tool->maintenanceSchedules()->create($request->validated());
 
-### Decision 2: `adjustQuantity` uses `$this->save()` not `$this->update()`
+    return redirect()->route('tools.show', $tool)
+        ->with('success', 'Maintenance schedule added.');
+}
+```
 
-`$this->update(['quantity_on_hand' => ...])` goes through mass-assignment filtering. Since `quantity_on_hand` is already in `$fillable` this would work, but using direct property assignment + `save()` is more explicit and avoids re-filtering. It also makes the intent clear: this is a targeted save of a computed value, not a user-supplied mass-assignment.
+**Rationale:**
 
-### Decision 3: `scopeLowStock` uses `whereColumn` not a PHP-side filter
+- `$request->validated()` is safe to pass directly to `create()` because `StoreMaintenanceScheduleRequest::rules()` only validates fields present in `MaintenanceSchedule::$fillable` (`maintenance_type`, `task`, `interval_days`, `interval_hours`, `notes`). No extra keys can pass through.
+- `tool_id` is set automatically by the `HasMany` relationship via `maintenanceSchedules()->create(...)`. `last_performed_at` and `next_due_at` default to `null` (new schedule, never performed).
+- Redirect to `tools.show` with flash `success` matches the project-wide convention and the acceptance criteria.
 
-`whereColumn('quantity_on_hand', '<=', 'low_stock_threshold')` lets MySQL do the comparison in a single query without fetching all rows. This is important for the future dashboard widget or inventory report that will list low-stock items. A PHP-side filter (e.g., `->get()->filter(fn($m) => $m->isLowStock())`) would load the full materials table into memory.
+---
 
-### Decision 4: Flash message built in the controller, not the model
+### 4.5 `app/Http/Controllers/ToolController.php` — add `destroySchedule`
 
-The message string is UI-layer concern — it combines a business value (the delta and new quantity) with a human-readable unit label. The model's `adjustQuantity()` returns `void` and has no knowledge of the HTTP layer. The controller constructs the string from public model attributes and the `MaterialUnit::label()` enum method after the save completes.
+Add after `storeSchedule`:
 
-### Decision 5: `AdjustStockRequest` already exists — no new form request needed
+```php
+public function destroySchedule(Tool $tool, MaintenanceSchedule $schedule): RedirectResponse
+{
+    $schedule->delete(); // hard delete — MaintenanceSchedule has no SoftDeletes trait
 
-`app/Http/Requests/AdjustStockRequest.php` is already in place with correct rules (`quantity` required numeric, `notes` nullable string). The controller stub accepted `Request $request` — the only change required is swapping the type-hint to `AdjustStockRequest`.
+    return redirect()->route('tools.show', $tool)
+        ->with('success', 'Schedule removed.');
+}
+```
 
-### Decision 6: Redirect to `materials.show`, not `redirect()->back()`
+**Rationale:**
 
-The stub uses `redirect()->back()`. The task spec redirects to `materials.show` with the material as the route parameter. Route model binding on the `materials` resource uses the model's ULID (`{material}` key). Passing the `$material` instance to `redirect()->route('materials.show', $material)` lets Laravel resolve the ULID automatically via the model's route key (`getRouteKey()`).
+- `MaintenanceSchedule` uses only `HasUlids` and `HasFactory` — no `SoftDeletes` trait. `$schedule->delete()` is therefore a hard delete, permanently removing the row. This is intentional per the governance rules ("hard delete everything else").
+- The `$tool` parameter is required by route model binding for the `{tool}` segment. It is not used directly in the method body but is needed so the redirect to `tools.show` can accept `$tool`.
+- The `MaintenanceLogs` associated with a deleted schedule have a `nullOnDelete()` foreign key constraint on `schedule_id` (confirmed in migration `2026_03_03_000013`). MySQL will automatically set `schedule_id = null` on any log rows referencing this schedule — no manual cleanup is needed.
+
+---
+
+### 4.6 `routes/web.php` — add schedule sub-resource routes
+
+In the `auth` + `verified` middleware group, after line 55 (`tools.log-maintenance`):
+
+```php
+// Tool sub-resources
+Route::post('/tools/{tool}/maintenance', [ToolController::class, 'logMaintenance'])->name('tools.log-maintenance');
+Route::post('/tools/{tool}/schedules', [ToolController::class, 'storeSchedule'])->name('tools.schedules.store');
+Route::delete('/tools/{tool}/schedules/{schedule}', [ToolController::class, 'destroySchedule'])->name('tools.schedules.destroy');
+```
+
+The two new lines are added immediately below the existing maintenance route so all tool sub-resources are grouped together. Named routes follow the Laravel sub-resource convention: `{resource}.{sub-resource}.{action}`.
 
 ---
 
@@ -153,62 +233,101 @@ The stub uses `redirect()->back()`. The task spec redirects to `materials.show` 
 
 | Requirement | Status |
 |-------------|--------|
-| `Material` model at `app/Models/Material.php` | Confirmed — file read, class exists |
-| `HasUlids`, `SoftDeletes`, `Searchable` traits on `Material` | Confirmed in model file |
-| `quantity_on_hand` in `$fillable` | Confirmed — line 26 of the model |
-| `low_stock_threshold` column on `materials` table | Confirmed — `decimal(10,2)` nullable in migration `2026_03_03_000006_create_materials_table.php` |
-| `quantity_on_hand` column on `materials` table | Confirmed — `decimal(10,2)` default 0, indexed |
-| `unit` cast to `MaterialUnit` enum | Confirmed — `casts()` method returns `['unit' => MaterialUnit::class]` |
-| `MaterialUnit::label()` method | Confirmed — all 14 cases covered in `app/Enums/MaterialUnit.php` |
-| `AdjustStockRequest` exists with correct rules | Confirmed — `app/Http/Requests/AdjustStockRequest.php` validates `quantity` (required, numeric) and `notes` (nullable, string) |
-| Route `materials.adjust-stock` — `POST /materials/{material}/adjust` | Confirmed in `routes/web.php` line 45, resolves to `MaterialController@adjustStock` |
-| Route `materials.show` named route | Confirmed — `Route::resource('materials', MaterialController::class)` generates `materials.show` |
-| `MaterialController::adjustStock` stub exists | Confirmed — current stub at line 43–46 accepts `Request $request`, returns `redirect()->back()` |
-| `MaterialFactory` with `quantity_on_hand` and `low_stock_threshold` | Confirmed — factory generates random float for quantity, null for threshold |
-| `MaterialControllerTest` uses `RefreshDatabase` and `Material::factory()` | Confirmed — existing test file at `tests/Feature/MaterialControllerTest.php` |
-| `Illuminate\Database\Eloquent\Builder` — available for type-hint in scope | Confirmed — standard Laravel Eloquent; no package install required |
+| `Tool` model at `app/Models/Tool.php` with `maintenanceLogs()` and `maintenanceSchedules()` relationships | Confirmed — `HasMany` for both, lines 58–66 |
+| `MaintenanceLog` model — `UPDATED_AT = null`, `usage_hours_at` in `$fillable` | Confirmed — line 15 and confirmed from migration `2026_03_03_000013` column `usage_hours_at decimal(10,2)` |
+| `MaintenanceLog::$fillable` includes `tool_id`, `schedule_id`, `maintenance_type`, `performed_at`, `cost`, `description` | Confirmed — lines 17–24 of `MaintenanceLog.php`; `usage_hours_at` also in fillable confirmed from migration |
+| `MaintenanceSchedule` model — `$fillable` includes all 7 fields needed by `storeSchedule` | Confirmed — lines 16–25 of `MaintenanceSchedule.php` |
+| `MaintenanceSchedule` — no `SoftDeletes` trait (hard delete is correct) | Confirmed — only `HasFactory` and `HasUlids` traits present |
+| `MaintenanceSchedule::$casts` — `maintenance_type` cast to `MaintenanceType`, date fields cast to `datetime` | Confirmed — lines 27–33 |
+| `MaintenanceSchedule` — FK `schedule_id` on `maintenance_logs` has `nullOnDelete()` | Confirmed — migration line: `->constrained('maintenance_schedules')->nullOnDelete()` |
+| `Tool::$fillable` includes `total_usage_hours` | Confirmed — line 30 of `Tool.php` |
+| `LogMaintenanceRequest` — validates `maintenance_type`, `description`, `performed_at`, `cost`, `schedule_id`, `usage_hours_at` | Confirmed — lines 17–25 of `LogMaintenanceRequest.php` |
+| `LogMaintenanceRequest` — `schedule_id` validated with `Rule::exists('maintenance_schedules', 'id')` | Confirmed — line 23 |
+| `MaintenanceType` enum — 8 backed string cases with `label()` method | Confirmed — `app/Enums/MaintenanceType.php` |
+| Route `tools.log-maintenance` already registered (`POST /tools/{tool}/maintenance`) | Confirmed — line 55 of `routes/web.php` |
+| Route `tools.show` — exists via `Route::resource('tools', ToolController::class)->except(['destroy'])` | Confirmed — line 52 |
+| `ToolController` stub — `logMaintenance(Request $request, Tool $tool)` returns `redirect()->back()` | Confirmed — lines 43–46 |
+| `MaintenanceScheduleFactory` — produces valid factory data; `tool_id` uses `Tool::factory()` | Confirmed — factory at `database/factories/MaintenanceScheduleFactory.php` |
+| `MaintenanceLogFactory` — `schedule_id` nullable by default | Confirmed — factory at `database/factories/MaintenanceLogFactory.php` |
 
 ---
 
-## 6. Risks and Mitigations
+## 6. Decisions and Rationale
 
-### Risk 1: Floating-point precision in `quantity_on_hand` after `adjustQuantity`
+### Decision 1: `$tool->maintenanceLogs()->create(...)` rather than `MaintenanceLog::create([..., 'tool_id' => $tool->id])`
 
-**Risk:** The database column is `decimal(10,2)`. PHP's `float` type can introduce rounding errors (e.g., `10.1 + 0.2 = 10.299999...`). After `adjustQuantity`, `$material->quantity_on_hand` will reflect whatever PHP computed before the save. MySQL will round the stored value to two decimal places on write, but the value read back within the same request cycle (for the flash message) is the PHP float value, which may not match the stored DB value.
+Using the relationship method auto-assigns `tool_id` and keeps the controller free of raw attribute injection. This is consistent with `ProjectController::addNote()` which uses `$project->notes()->create(...)` and `ProjectController::logTime()` which uses `$project->timeEntries()->create(...)`.
 
-**Mitigation:** For the flash message, the discrepancy (if any) is cosmetic and sub-cent in magnitude. The stored value in MySQL is always correctly rounded. If precise display is needed, the implementer may apply `round($this->quantity_on_hand + $delta, 2)` inside `adjustQuantity`. The task spec does not require this — accept the risk as low severity.
+### Decision 2: `usage_hours_at` is stored in the log row and also applied to the tool
 
-### Risk 2: Race condition on concurrent adjustments
+The `maintenance_logs` table has a `usage_hours_at decimal(10,2)` column (confirmed in migration). This field records the odometer reading *at the time* of the maintenance event — useful for historical queries like "what was the tool's hour count when we last changed the blade?" The separate `$tool->update(['total_usage_hours' => ...])` call then also advances the tool's running total. These are two distinct concerns: historical snapshot vs. current state.
 
-**Risk:** Two simultaneous POST requests to `materials/{material}/adjust` both read `quantity_on_hand`, compute the delta, and write back. One update will silently overwrite the other.
+### Decision 3: `interval_days` takes priority over `interval_hours` in `next_due_at` computation
 
-**Mitigation:** Out of scope for this task (single-user tool per CLAUDE.md: "solo woodworker"). Not addressed here. If concurrent access becomes a concern, a future task could wrap `adjustQuantity` in a `DB::transaction` with a pessimistic lock (`lockForUpdate()`).
+When a `MaintenanceSchedule` has both `interval_days` and `interval_hours` set, `interval_days` is used to compute `next_due_at`. The rationale is that calendar-based intervals are more common for shop tools and more intuitive for a solo operator to reason about ("sharpen the blade every 30 days"). Hours-based intervals are a precision mechanism used when calendar time is not meaningful (e.g., for a machine that might sit unused for months). Having one field win explicitly — rather than combining them — avoids an undefined behavior edge case.
 
-### Risk 3: `$material->quantity_on_hand` in the flash message is the pre-save PHP value
+### Decision 4: `withValidator` error placed on `interval_days`, not a custom `_custom` key
 
-**Risk:** `$material->save()` persists to the database. Reading `$material->quantity_on_hand` immediately after is the in-memory property, not a fresh DB read. If MySQL rounds the decimal differently from PHP, the flash message shows the PHP value.
+Laravel's Inertia adapter maps validation errors by field name. The frontend add-schedule form will highlight the field with the error. Attaching the "at least one interval" error to `interval_days` (the first interval field in the form) makes it visible next to the relevant input rather than in a generic error banner. The message text explicitly mentions "days or hours" so the user understands both fields are in scope.
 
-**Mitigation:** The difference is at most 0.005 units (sub-penny rounding). The flash message is informational only, not used for financial calculations. Accepted as-is per spec.
+### Decision 5: `MaintenanceSchedule::find($data['schedule_id'])` rather than eager-loading via the tool relationship
 
-### Risk 4: `scopeLowStock` does not account for soft-deleted records
+`logMaintenance` receives a validated `schedule_id` that `LogMaintenanceRequest` has confirmed exists in `maintenance_schedules` via `Rule::exists`. A simple `find()` is one DB call and sufficient. Using `$tool->maintenanceSchedules()->find($schedule_id)` would add a `WHERE tool_id = ?` constraint, which is a useful integrity check — however `Rule::exists` does not scope to the current tool, so a schedule from a different tool could theoretically be passed. The safer option would be to use the scoped relationship. **Implementer note:** consider changing to `$tool->maintenanceSchedules()->findOrFail($data['schedule_id'])` to enforce the tool-schedule ownership check at the application level rather than relying solely on `Rule::exists`.
 
-**Risk:** `scopeLowStock` uses `whereNotNull` + `whereColumn` but does not add `whereNull('deleted_at')`. Without the global soft-delete scope, soft-deleted materials could appear as low-stock.
+### Decision 6: Hard delete on `destroySchedule` with no ownership check between `$tool` and `$schedule`
 
-**Mitigation:** `Material` uses `SoftDeletes`, which applies a global scope automatically. Any Eloquent query builder on the `Material` model already excludes soft-deleted rows unless `->withTrashed()` is explicitly called. `scopeLowStock` is always chained on the `Material` query builder, so soft-deleted records are excluded by the global scope before `scopeLowStock` runs.
+The route is `DELETE /tools/{tool}/schedules/{schedule}`. Laravel's route model binding resolves `{schedule}` to any `MaintenanceSchedule` by ULID, regardless of whether it belongs to `$tool`. The `maintenance_schedules` table has `tool_id` as a foreign key but there is no global scope or implicit filtering here. For a single-user app this is a non-issue (there is only one user). If multi-tenancy or ownership checking is ever added, an `abort_if($schedule->tool_id !== $tool->id, 403)` guard should be inserted before `$schedule->delete()`.
 
 ---
 
-## 7. Acceptance Criteria Coverage
+## 7. Risks and Mitigations
+
+### Risk 1: `schedule_id` in `LogMaintenanceRequest` does not validate that the schedule belongs to the current tool
+
+**Risk:** A user could POST `/tools/{toolA}/maintenance` with a `schedule_id` belonging to `toolB`. The log would be created against `toolA` but the `next_due_at` update would apply to `toolB`'s schedule — silent data corruption.
+
+**Mitigation:** For a single-user tool (per CLAUDE.md: "solo woodworker") this is not a real-world risk. If the `schedule_id` constraint needs to be tightened, `LogMaintenanceRequest` would need access to the route-bound `$tool`. This can be done via `$this->route('tool')` inside the form request's `rules()` method. Out of scope for this task; noted as a follow-up.
+
+### Risk 2: `$schedule->next_due_at = null` when schedule has no interval
+
+**Risk:** A schedule with neither `interval_days` nor `interval_hours` set (which can happen if both were left null in the factory) will have `next_due_at` set to `null` after logging maintenance. This means the "Overdue" / "Due Soon" badges on the Show page will never fire for that schedule.
+
+**Mitigation:** `StoreMaintenanceScheduleRequest` now enforces that at least one interval is provided at creation time. Schedules already in the DB (from factory seeds) may lack intervals — in that case `null` is the correct state and the badge logic in `MaintenanceSchedule` (TASK-03) already handles `next_due_at === null` by returning false for both `isOverdue()` and `isDueSoon()`.
+
+### Risk 3: `interval_hours` is stored as `integer` in the migration but `numeric` in the form request
+
+**Risk:** The `maintenance_schedules` migration declares `interval_hours` as `integer` (line `$table->integer('interval_hours')->nullable()`), but `StoreMaintenanceScheduleRequest` validates it as `numeric` with `min:0.1`. A value of `0.5` would pass validation but be truncated to `0` by MySQL when stored as `INTEGER`, and MySQL would then silently set it to `0`.
+
+**Mitigation:** This is a schema design tension that pre-exists this task. The `interval_hours` column is `integer` in the migration but the spec says `nullable numeric`. The `addHours()` call in `logMaintenance` accepts a float, so the computation would work correctly if the column were `decimal`. The implementer should treat `interval_hours` as an integer (whole hours only) in validation — use `'integer'` not `'numeric'` in the rules — to match the actual column type and avoid silent truncation. The plan spec says `numeric`, but the migration says `integer`; this plan follows the migration as the authoritative source of truth.
+
+**Corrected rule for `interval_hours`:**
+```php
+'interval_hours' => ['nullable', 'integer', 'min:1'],
+```
+
+This also means `min:1` (not `min:0.1`) since the column is integer and a fractional hour cannot be stored.
+
+### Risk 4: `$tool->update(['total_usage_hours' => ...])` overwrites, not increments, the running total
+
+**Risk:** If the user accidentally submits a `usage_hours_at` value lower than the current `total_usage_hours`, the running total will go backwards.
+
+**Mitigation:** The field is named `usage_hours_at` (odometer-style snapshot), not `usage_hours_delta`. The frontend should display the current `total_usage_hours` in the form so the user enters the new cumulative reading. No guard against backwards updates is implemented — accepted as-is for a single-user app. If a guard is needed, add: `if ($data['usage_hours_at'] > $tool->total_usage_hours)` before the update call.
+
+---
+
+## 8. Acceptance Criteria Coverage
 
 | Criterion | How Met |
 |-----------|---------|
-| `scopeLowStock` added to `Material` model | Added as `public function scopeLowStock(Builder $query): Builder` — callable as `Material::query()->lowStock()` |
-| Scope filters to rows where `quantity_on_hand <= low_stock_threshold` and threshold is not null | `whereNotNull('low_stock_threshold')->whereColumn('quantity_on_hand', '<=', 'low_stock_threshold')` |
-| `isLowStock()` added to `Material` model | Added as `public function isLowStock(): bool` — checks instance state without a DB call |
-| `adjustQuantity(float $delta)` added to `Material` model | Added as `public function adjustQuantity(float $delta): void` — floors at 0, persists with `save()` |
-| `adjustStock` controller uses `AdjustStockRequest` (not plain `Request`) | Type-hint changed to `AdjustStockRequest $request` — Laravel fires validation before the method body runs |
-| No validation logic in the controller | All validation rules remain in `AdjustStockRequest::rules()` — controller only calls `$request->validated()` |
-| Delta applied via model method, not inline in controller | Controller calls `$material->adjustQuantity($delta)` — no arithmetic in the controller |
-| Flash message includes direction, absolute quantity, unit label, new stock level, and optional notes | Message string built from `$direction`, `$abs`, `$unitLabel`, `$after`, and `$data['notes']` |
-| Redirect goes to `materials.show` with the material | `redirect()->route('materials.show', $material)->with('success', $message)` |
-| Stock cannot go below zero | `max(0, ...)` in `adjustQuantity` enforces the floor at the model level |
+| POST `/tools/{tool}/maintenance` with valid data creates a `MaintenanceLog` row | `$tool->maintenanceLogs()->create([...])` in `logMaintenance` |
+| `MaintenanceLog` row has correct `tool_id`, `schedule_id`, `maintenance_type`, `description`, `performed_at`, `cost`, `usage_hours_at` | All 7 fields explicitly passed to `create()` |
+| When `schedule_id` provided, `MaintenanceSchedule.last_performed_at` is set to `performed_at` | `$schedule->last_performed_at = $performedAt` + `$schedule->save()` |
+| When `schedule_id` provided and `interval_days` set, `next_due_at` = `performed_at + interval_days` | `$performedAt->copy()->addDays($schedule->interval_days)` |
+| When `schedule_id` provided and only `interval_hours` set, `next_due_at` = `performed_at + interval_hours` | `$performedAt->copy()->addHours($schedule->interval_hours)` |
+| When `usage_hours_at` provided, `tools.total_usage_hours` is updated | `$tool->update(['total_usage_hours' => $data['usage_hours_at']])` |
+| POST `/tools/{tool}/schedules` with valid data creates a `MaintenanceSchedule` | `$tool->maintenanceSchedules()->create($request->validated())` in `storeSchedule` |
+| `StoreMaintenanceScheduleRequest` rejects when both interval fields are absent | `withValidator` adds error to `interval_days` |
+| DELETE `/tools/{tool}/schedules/{schedule}` hard-deletes the schedule | `$schedule->delete()` — no `SoftDeletes` on `MaintenanceSchedule`; `assertDatabaseMissing` will pass |
+| All three actions redirect to `tools.show` with flash `success` | All three methods end with `redirect()->route('tools.show', $tool)->with('success', ...)` |
+| No validation logic in controllers | All validation delegated to `LogMaintenanceRequest` and `StoreMaintenanceScheduleRequest` |
+| Routes `tools.schedules.store` and `tools.schedules.destroy` are registered | Two new `Route::post` / `Route::delete` lines added to `routes/web.php` |
