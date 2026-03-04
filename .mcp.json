@@ -1,8 +1,17 @@
 {
-  "mcpServers": {
-    "dev-team": {
-      "command": "node",
-      "args": ["/home/cyclops/agentic-dev-team/mcp-server/build/index.js"]
+    "mcpServers": {
+        "laravel-boost": {
+            "command": "./vendor/bin/sail",
+            "args": [
+                "artisan",
+                "boost:mcp"
+            ]
+        },
+        "dev-team": {
+            "command": "node",
+            "args": [
+                "/home/cyclops/Programming/agentic-dev-team/build/index.js"
+            ]
+        }
     }
-  }
 }

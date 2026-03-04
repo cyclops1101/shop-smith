@@ -1,339 +1,706 @@
-# Task 10 Implementation Plan: Page Component Stubs
+# Task 10 Implementation Plan: Sub-resource Feature Tests
 
-## 1. Approach
+## 1. Overview
 
-Create 16 stub JSX page components under `resources/js/Pages/`. Each stub renders a minimal but valid React component that:
+Create `tests/Feature/ProjectSubResourceTest.php` containing PHPUnit 11 feature tests for all five project sub-resource actions:
 
-- Wraps content in `AppLayout` (except `Portfolio/Index.jsx`, which is public-facing and uses no auth layout)
-- Accepts the exact prop shape that the corresponding controller will pass via Inertia
-- Renders a heading identifying the page and placeholder text
+- Photo upload (`POST /projects/{project}/photos`)
+- Time logging (`POST /projects/{project}/time`)
+- Timer stop (`PUT /projects/{project}/time/{entry}/stop`)
+- Note creation (`POST /projects/{project}/notes`)
+- Material attachment (`POST /projects/{project}/materials`)
 
-These stubs serve as scaffolding that future phases will fill in with real UI. The primary goal is ensuring every Inertia route has a matching component so that `npm run build` succeeds and controller stubs from Task 06 can render without a "component not found" error.
-
-`Dashboard.jsx` may have been created in Task 05 as part of the base layout work. If it exists, it must be updated to accept the `{ stats }` prop shape. If it does not exist, it will be created here.
-
-## 2. Files to Create/Modify
-
-| Action | Path |
-|--------|------|
-| Create or update | `resources/js/Pages/Dashboard.jsx` |
-| Create | `resources/js/Pages/Projects/Index.jsx` |
-| Create | `resources/js/Pages/Projects/Show.jsx` |
-| Create | `resources/js/Pages/Projects/Create.jsx` |
-| Create | `resources/js/Pages/Projects/Edit.jsx` |
-| Create | `resources/js/Pages/Materials/Index.jsx` |
-| Create | `resources/js/Pages/Materials/Show.jsx` |
-| Create | `resources/js/Pages/Materials/Create.jsx` |
-| Create | `resources/js/Pages/Materials/Edit.jsx` |
-| Create | `resources/js/Pages/Tools/Index.jsx` |
-| Create | `resources/js/Pages/Tools/Show.jsx` |
-| Create | `resources/js/Pages/Tools/Create.jsx` |
-| Create | `resources/js/Pages/Tools/Edit.jsx` |
-| Create | `resources/js/Pages/Finance/Index.jsx` |
-| Create | `resources/js/Pages/CutList/Index.jsx` |
-| Create | `resources/js/Pages/Portfolio/Index.jsx` |
-
-Subdirectories `Projects/`, `Materials/`, `Tools/`, `Finance/`, `CutList/`, and `Portfolio/` must be created under `resources/js/Pages/` if they do not already exist. There are no existing files in `resources/js/Pages/` since Breeze has not been installed yet.
-
-## 3. Key Decisions
-
-### Decision 1: Minimal stub structure, not empty shells
-
-Each stub must:
-- Import `AppLayout` from `../../Layouts/AppLayout` (or appropriate relative path)
-- Destructure the expected props in the function signature
-- Return a JSX tree inside `<AppLayout>` with a heading and a paragraph
-
-Empty components (`export default function Foo() { return null }`) would pass the build but would not satisfy the acceptance criterion requiring each page to accept props matching the controller's prop shape.
-
-### Decision 2: AppLayout import path is relative
-
-All pages import `AppLayout` using a relative path. The exact relative path depends on nesting depth:
-- Pages at the root (`Dashboard.jsx`): `../Layouts/AppLayout`
-- Pages one level deep (`Projects/Index.jsx`): `../../Layouts/AppLayout`
-
-This is consistent with how Breeze auth pages import their layouts.
-
-### Decision 3: Portfolio/Index.jsx uses a bare `<main>` wrapper, not AppLayout
-
-`Portfolio/Index.jsx` is the only public page — it must not require authentication, and its layout must not include the authenticated nav bar. The stub renders a `<main>` element directly. Future phases will style this page as a clean gallery with no auth chrome.
-
-### Decision 4: Component export names match the Inertia component string
-
-Inertia resolves components by the string passed to `Inertia::render()`. For example, `Inertia::render('Projects/Index')` maps to the default export of `resources/js/Pages/Projects/Index.jsx`. The default export name in JSX does not technically need to match, but by convention and for readability it should. Examples: `ProjectsIndex`, `ProjectsShow`, `Dashboard`, `PortfolioIndex`.
-
-### Decision 5: Props are destructured in the function signature
-
-Controllers will pass props as a flat object. Using destructuring in the function signature (`function Dashboard({ stats })`) makes the expected shape explicit and serves as documentation for the next developer who implements the real page.
-
-## 4. Verified Dependencies
-
-- **Task 01 (Breeze install):** Required. `resources/js/Layouts/AppLayout.jsx` is created by Task 05, which depends on Task 01. If Task 05 is not complete, `AppLayout.jsx` will not exist and the import will fail at build time.
-- **Task 05 (Frontend Base Layout + UI Primitives):** Required. `AppLayout.jsx` and the `Components/ui/` primitives must exist. Task 10 runs in Group 4 which is after Group 2 (where Task 05 runs), so this dependency is satisfied.
-- **Task 06 (Routes + Controller Stubs):** Informational dependency. Task 10 does not call any routes, but the prop shapes are defined by what Task 06 controllers will pass. The prop list in this plan is taken directly from the task manifest and spec.
-- **`@inertiajs/react`:** Installed by Task 01 via Breeze. No pages in these stubs need `useForm` or `router` yet — they are display-only stubs. The only Inertia import needed would be `Link` if the AppLayout uses it for nav, but that is AppLayout's concern, not the pages'.
-
-## 5. Risks
-
-| Risk | Likelihood | Mitigation |
-|------|------------|------------|
-| `AppLayout.jsx` does not exist when Task 10 runs | Low | Task 10 is in Group 4; Task 05 (which creates AppLayout) is in Group 2. The manifest enforces this ordering. Implementer must verify Task 05 is complete before starting Task 10. |
-| Subdirectory creation fails silently | Very low | Use the file system to create parent directories before writing files. Verify with `ls` after creation. |
-| `Dashboard.jsx` already exists from Task 05 with a different prop signature | Medium | Task 05 creates a stub Dashboard with placeholder content. Task 10 must update it to accept `{ stats }` as the prop. Use `Edit` not overwrite to preserve any Task 05 work. |
-| Inertia component name mismatch (case sensitivity on Linux) | Low | Linux filesystems are case-sensitive. Ensure the component path passed to `Inertia::render()` in the controller (Task 06) exactly matches the file path. E.g., `'CutList/Index'` must match `CutList/Index.jsx`, not `Cutlist/Index.jsx`. Coordinate with Task 06 implementer. |
-| `npm run build` fails due to missing import in AppLayout | Low | AppLayout may import UI primitives that do not exist if Task 05 is not fully complete. Run `npm run build` as the final acceptance check and fix any import errors. |
-
-## 6. Acceptance Criteria Coverage
-
-| Criterion | Implementation |
-|-----------|---------------|
-| All 16 page files exist in correct subdirectory under `resources/js/Pages/` | 16 files created, each in its named subdirectory as listed in Files section |
-| Every page except `Portfolio/Index.jsx` imports and wraps content in `AppLayout` | 15 pages import `AppLayout` and return `<AppLayout>...</AppLayout>`; `Portfolio/Index.jsx` returns a bare `<main>` |
-| `Portfolio/Index.jsx` does NOT use `AppLayout` | `Portfolio/Index.jsx` renders a `<main>` wrapper with no auth-dependent nav |
-| Each page function accepts a props object matching the prop shape listed | Every function signature destructures the props listed in the task manifest |
-| Page component names match the string passed to `Inertia::render()` in controllers | Default export names correspond to Inertia component strings (e.g., `Projects/Index`) |
-| `npm run build` completes without errors | Verified as the final step after creating all 16 files |
+The test file follows the same conventions as `tests/Feature/ProjectControllerTest.php`: PHPUnit 11 `#[Test]` attribute syntax, `RefreshDatabase` trait, and `actingAs(User::factory()->create())` for authentication.
 
 ---
 
-## Appendix: Page Stubs Detail
+## 2. File to Create
 
-### Dashboard.jsx
-```jsx
-// Props: { stats }
-import AppLayout from '../Layouts/AppLayout'
+| Action | Path |
+|--------|------|
+| Create | `tests/Feature/ProjectSubResourceTest.php` |
 
-export default function Dashboard({ stats }) {
-  return (
-    <AppLayout>
-      <h1>Dashboard</h1>
-      <p>Workshop overview and quick stats will appear here.</p>
-    </AppLayout>
-  )
+No existing files are modified.
+
+---
+
+## 3. Relevant Source Files
+
+### Routes (from `routes/web.php`)
+
+```php
+Route::post('/projects/{project}/photos',           [ProjectController::class, 'uploadPhoto'])->name('projects.upload-photo');
+Route::post('/projects/{project}/time',             [ProjectController::class, 'logTime'])->name('projects.log-time');
+Route::put('/projects/{project}/time/{entry}/stop', [ProjectController::class, 'stopTimer'])->name('projects.stop-timer');
+Route::post('/projects/{project}/materials',        [ProjectController::class, 'attachMaterial'])->name('projects.attach-material');
+Route::post('/projects/{project}/notes',            [ProjectController::class, 'addNote'])->name('projects.add-note');
+```
+
+All routes are within `middleware(['auth', 'verified'])`. Route model binding resolves `{project}` by `slug` (see `Project::getRouteKeyName()`) and `{entry}` by ULID.
+
+### Form Request Validation Rules
+
+**StoreProjectPhotoRequest:**
+- `photo`: required, image, mimes:jpeg,png,webp, max:10240
+- `caption`: nullable, string, max:255
+
+**LogTimeRequest:**
+- `started_at`: required, date
+- `ended_at`: nullable, date, after_or_equal:started_at
+- `description`: nullable, string, max:255
+- `duration_minutes`: nullable, integer, min:1
+
+**AttachMaterialRequest:**
+- `material_id`: required, ulid, exists:materials,id
+- `quantity_used`: required, numeric, min:0.01
+- `notes`: nullable, string, max:255
+
+**AddNoteRequest:**
+- `content`: required, string
+
+### Factories Available
+
+- `User::factory()->create()`
+- `Project::factory()->create()` — generates `slug` automatically via `booted()` observer
+- `ProjectPhoto::factory()->create(['project_id' => $project->id])`
+- `TimeEntry::factory()->create(['project_id' => $project->id])` — includes `running()` state for null `ended_at`
+- `ProjectNote::factory()->create(['project_id' => $project->id])`
+- `Material::factory()->create()`
+- `ProjectMaterial::factory()->create([...])`
+
+---
+
+## 4. Test Structure
+
+### 4.1 Class Skeleton
+
+```php
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Material;
+use App\Models\Project;
+use App\Models\ProjectMaterial;
+use App\Models\ProjectNote;
+use App\Models\ProjectPhoto;
+use App\Models\TimeEntry;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+
+class ProjectSubResourceTest extends TestCase
+{
+    use RefreshDatabase;
+
+    // --- Photo tests ---
+    #[Test]
+    public function uploading_valid_image_creates_project_photo(): void { ... }
+
+    #[Test]
+    public function uploading_non_image_returns_422(): void { ... }
+
+    // --- Time entry tests ---
+    #[Test]
+    public function logging_time_with_start_and_end_creates_entry_with_duration(): void { ... }
+
+    #[Test]
+    public function logging_time_with_only_started_at_creates_running_timer(): void { ... }
+
+    #[Test]
+    public function logging_time_without_started_at_returns_422(): void { ... }
+
+    #[Test]
+    public function stopping_timer_sets_ended_at_and_duration(): void { ... }
+
+    // --- Note tests ---
+    #[Test]
+    public function adding_note_with_valid_content_creates_project_note(): void { ... }
+
+    #[Test]
+    public function adding_note_with_empty_content_returns_422(): void { ... }
+
+    // --- Material tests ---
+    #[Test]
+    public function attaching_material_with_valid_data_creates_pivot_row(): void { ... }
+
+    #[Test]
+    public function attaching_material_with_non_existent_material_id_returns_422(): void { ... }
 }
 ```
 
-### Projects/Index.jsx
-```jsx
-// Props: { projects, filters }
-import AppLayout from '../../Layouts/AppLayout'
+---
 
-export default function ProjectsIndex({ projects, filters }) {
-  return (
-    <AppLayout>
-      <h1>Projects</h1>
-      <p>Project list and filters will appear here.</p>
-    </AppLayout>
-  )
+## 5. Individual Test Specifications
+
+### 5.1 Photo: Valid Upload Creates Record
+
+```php
+#[Test]
+public function uploading_valid_image_creates_project_photo(): void
+{
+    Storage::fake('public');
+
+    $user    = User::factory()->create();
+    $project = Project::factory()->create();
+    $file    = UploadedFile::fake()->image('photo.jpg');
+
+    $response = $this->actingAs($user)
+        ->post('/projects/' . $project->slug . '/photos', [
+            'photo'   => $file,
+            'caption' => 'Test caption',
+        ]);
+
+    $response->assertRedirect();
+    $this->assertDatabaseHas('project_photos', [
+        'project_id' => $project->id,
+        'caption'    => 'Test caption',
+    ]);
 }
 ```
 
-### Projects/Show.jsx
-```jsx
-// Props: { project }
-import AppLayout from '../../Layouts/AppLayout'
+Key points:
+- `Storage::fake('public')` must be called before the request so that `Storage::disk('public')->put(...)` writes to a fake filesystem, not the real `storage/app/public` directory.
+- `UploadedFile::fake()->image('photo.jpg')` creates a synthetic JPEG that passes the `image` and `mimes:jpeg,png,webp` rules.
+- The assertion uses `assertDatabaseHas` on `project_photos` rather than inspecting the redirect location, because the controller calls `redirect()->back()` in its stub — this verifies the side-effect (record created) independent of redirect destination.
+- Once the controller is fully implemented the `file_path` column will also be populated; the test intentionally does not assert `file_path` here to avoid coupling to the storage path implementation detail.
 
-export default function ProjectsShow({ project }) {
-  return (
-    <AppLayout>
-      <h1>Project: {project?.title ?? 'Loading...'}</h1>
-      <p>Project details, time tracking, photos, and notes will appear here.</p>
-    </AppLayout>
-  )
+### 5.2 Photo: Non-Image Returns 422
+
+```php
+#[Test]
+public function uploading_non_image_returns_422(): void
+{
+    Storage::fake('public');
+
+    $user    = User::factory()->create();
+    $project = Project::factory()->create();
+    $file    = UploadedFile::fake()->create('document.pdf', 100, 'application/pdf');
+
+    $response = $this->actingAs($user)
+        ->post('/projects/' . $project->slug . '/photos', [
+            'photo' => $file,
+        ]);
+
+    $response->assertStatus(422);
+    $this->assertDatabaseCount('project_photos', 0);
 }
 ```
 
-### Projects/Create.jsx
-```jsx
-// Props: { statuses, priorities }
-import AppLayout from '../../Layouts/AppLayout'
+Key points:
+- `UploadedFile::fake()->create('document.pdf', 100, 'application/pdf')` creates a file with a MIME type that fails the `mimes:jpeg,png,webp` rule.
+- `assertStatus(422)` verifies Laravel's validation failure response.
+- `assertDatabaseCount('project_photos', 0)` confirms no record was created.
 
-export default function ProjectsCreate({ statuses, priorities }) {
-  return (
-    <AppLayout>
-      <h1>New Project</h1>
-      <p>Project creation form will appear here.</p>
-    </AppLayout>
-  )
+### 5.3 Time: Start + End Creates Entry with Duration
+
+```php
+#[Test]
+public function logging_time_with_start_and_end_creates_entry_with_duration(): void
+{
+    $user    = User::factory()->create();
+    $project = Project::factory()->create();
+
+    $response = $this->actingAs($user)
+        ->post('/projects/' . $project->slug . '/time', [
+            'started_at' => '2026-03-03 09:00:00',
+            'ended_at'   => '2026-03-03 10:30:00',
+        ]);
+
+    $response->assertRedirect();
+    $this->assertDatabaseHas('time_entries', [
+        'project_id'       => $project->id,
+        'duration_minutes' => 90,
+    ]);
 }
 ```
 
-### Projects/Edit.jsx
-```jsx
-// Props: { project, statuses, priorities }
-import AppLayout from '../../Layouts/AppLayout'
+Key points:
+- The `duration_minutes` value (90) is calculated as the diff in minutes between the two timestamps. The controller implementation is expected to compute this; the test asserts it was persisted correctly.
+- The timestamps are fixed strings to make the assertion deterministic.
 
-export default function ProjectsEdit({ project, statuses, priorities }) {
-  return (
-    <AppLayout>
-      <h1>Edit Project: {project?.title ?? 'Loading...'}</h1>
-      <p>Project edit form will appear here.</p>
-    </AppLayout>
-  )
+### 5.4 Time: Only started_at Creates Running Timer
+
+```php
+#[Test]
+public function logging_time_with_only_started_at_creates_running_timer(): void
+{
+    $user    = User::factory()->create();
+    $project = Project::factory()->create();
+
+    $response = $this->actingAs($user)
+        ->post('/projects/' . $project->slug . '/time', [
+            'started_at' => '2026-03-03 09:00:00',
+        ]);
+
+    $response->assertRedirect();
+    $this->assertDatabaseHas('time_entries', [
+        'project_id'       => $project->id,
+        'ended_at'         => null,
+        'duration_minutes' => null,
+    ]);
 }
 ```
 
-### Materials/Index.jsx
-```jsx
-// Props: { materials, categories }
-import AppLayout from '../../Layouts/AppLayout'
+Key points:
+- `ended_at` is nullable in `LogTimeRequest`, so omitting it is valid.
+- The test asserts that both `ended_at` and `duration_minutes` are `null` in the database row — confirming a "running" timer state.
 
-export default function MaterialsIndex({ materials, categories }) {
-  return (
-    <AppLayout>
-      <h1>Materials</h1>
-      <p>Materials inventory list and category filters will appear here.</p>
-    </AppLayout>
-  )
+### 5.5 Time: Missing started_at Returns 422
+
+```php
+#[Test]
+public function logging_time_without_started_at_returns_422(): void
+{
+    $user    = User::factory()->create();
+    $project = Project::factory()->create();
+
+    $response = $this->actingAs($user)
+        ->post('/projects/' . $project->slug . '/time', [
+            'ended_at' => '2026-03-03 10:00:00',
+        ]);
+
+    $response->assertStatus(422);
+    $this->assertDatabaseCount('time_entries', 0);
 }
 ```
 
-### Materials/Show.jsx
-```jsx
-// Props: { material }
-import AppLayout from '../../Layouts/AppLayout'
+Key points:
+- `started_at` is `required` in `LogTimeRequest`; omitting it must produce a 422.
 
-export default function MaterialsShow({ material }) {
-  return (
-    <AppLayout>
-      <h1>Material: {material?.name ?? 'Loading...'}</h1>
-      <p>Material detail, stock history, and project usage will appear here.</p>
-    </AppLayout>
-  )
+### 5.6 Timer Stop: Sets ended_at and duration
+
+```php
+#[Test]
+public function stopping_timer_sets_ended_at_and_duration(): void
+{
+    $user    = User::factory()->create();
+    $project = Project::factory()->create();
+    $entry   = TimeEntry::factory()->running()->create([
+        'project_id' => $project->id,
+        'started_at' => now()->subHour(),
+    ]);
+
+    $response = $this->actingAs($user)
+        ->put('/projects/' . $project->slug . '/time/' . $entry->id . '/stop');
+
+    $response->assertRedirect();
+    $entry->refresh();
+    $this->assertNotNull($entry->ended_at);
+    $this->assertNotNull($entry->duration_minutes);
+    $this->assertGreaterThan(0, $entry->duration_minutes);
 }
 ```
 
-### Materials/Create.jsx
-```jsx
-// Props: { categories, suppliers, units }
-import AppLayout from '../../Layouts/AppLayout'
+Key points:
+- `TimeEntry::factory()->running()` uses the `running()` state defined in `TimeEntryFactory`, which sets `ended_at` and `duration_minutes` to `null`.
+- `started_at` is set to `now()->subHour()` to ensure a meaningful duration once the timer is stopped.
+- The `{entry}` route parameter resolves by ULID (the `id` column). `$entry->id` is the ULID string.
+- After the request, `$entry->refresh()` reloads the model from the database. The test then asserts `ended_at` is set and `duration_minutes > 0`.
 
-export default function MaterialsCreate({ categories, suppliers, units }) {
-  return (
-    <AppLayout>
-      <h1>Add Material</h1>
-      <p>Material creation form will appear here.</p>
-    </AppLayout>
-  )
+### 5.7 Notes: Valid Content Creates Record
+
+```php
+#[Test]
+public function adding_note_with_valid_content_creates_project_note(): void
+{
+    $user    = User::factory()->create();
+    $project = Project::factory()->create();
+
+    $response = $this->actingAs($user)
+        ->post('/projects/' . $project->slug . '/notes', [
+            'content' => 'This is a workshop note about the dovetail joints.',
+        ]);
+
+    $response->assertRedirect();
+    $this->assertDatabaseHas('project_notes', [
+        'project_id' => $project->id,
+        'content'    => 'This is a workshop note about the dovetail joints.',
+    ]);
 }
 ```
 
-### Materials/Edit.jsx
-```jsx
-// Props: { material, categories, suppliers, units }
-import AppLayout from '../../Layouts/AppLayout'
+### 5.8 Notes: Empty Content Returns 422
 
-export default function MaterialsEdit({ material, categories, suppliers, units }) {
-  return (
-    <AppLayout>
-      <h1>Edit Material: {material?.name ?? 'Loading...'}</h1>
-      <p>Material edit form will appear here.</p>
-    </AppLayout>
-  )
+```php
+#[Test]
+public function adding_note_with_empty_content_returns_422(): void
+{
+    $user    = User::factory()->create();
+    $project = Project::factory()->create();
+
+    $response = $this->actingAs($user)
+        ->post('/projects/' . $project->slug . '/notes', [
+            'content' => '',
+        ]);
+
+    $response->assertStatus(422);
+    $this->assertDatabaseCount('project_notes', 0);
 }
 ```
 
-### Tools/Index.jsx
-```jsx
-// Props: { tools, categories }
-import AppLayout from '../../Layouts/AppLayout'
+Key points:
+- `content` is `required` in `AddNoteRequest`; an empty string must produce a 422.
+- Sending an empty string (`''`) rather than omitting the key tests both the `required` rule and ensures Laravel treats empty strings as missing values (which it does with the `ConvertEmptyStringsToNull` middleware).
 
-export default function ToolsIndex({ tools, categories }) {
-  return (
-    <AppLayout>
-      <h1>Tools</h1>
-      <p>Tool inventory list and category filters will appear here.</p>
-    </AppLayout>
-  )
+### 5.9 Materials: Valid Data Creates Pivot Row
+
+```php
+#[Test]
+public function attaching_material_with_valid_data_creates_pivot_row(): void
+{
+    $user     = User::factory()->create();
+    $project  = Project::factory()->create();
+    $material = Material::factory()->create();
+
+    $response = $this->actingAs($user)
+        ->post('/projects/' . $project->slug . '/materials', [
+            'material_id'   => $material->id,
+            'quantity_used' => 2.5,
+        ]);
+
+    $response->assertRedirect();
+    $this->assertDatabaseHas('project_materials', [
+        'project_id'  => $project->id,
+        'material_id' => $material->id,
+    ]);
 }
 ```
 
-### Tools/Show.jsx
-```jsx
-// Props: { tool }
-import AppLayout from '../../Layouts/AppLayout'
+Key points:
+- `$material->id` is a ULID string, satisfying the `ulid` rule in `AttachMaterialRequest`.
+- `quantity_used` of `2.5` satisfies `numeric, min:0.01`.
+- The assertion checks the `project_materials` pivot table (not a `project_material` Eloquent model directly).
 
-export default function ToolsShow({ tool }) {
-  return (
-    <AppLayout>
-      <h1>Tool: {tool?.name ?? 'Loading...'}</h1>
-      <p>Tool detail, maintenance schedules, and logs will appear here.</p>
-    </AppLayout>
-  )
+### 5.10 Materials: Non-existent material_id Returns 422
+
+```php
+#[Test]
+public function attaching_material_with_non_existent_material_id_returns_422(): void
+{
+    $user    = User::factory()->create();
+    $project = Project::factory()->create();
+
+    $fakeUlid = \Illuminate\Support\Str::ulid()->toString();
+
+    $response = $this->actingAs($user)
+        ->post('/projects/' . $project->slug . '/materials', [
+            'material_id'   => $fakeUlid,
+            'quantity_used' => 1.0,
+        ]);
+
+    $response->assertStatus(422);
+    $this->assertDatabaseCount('project_materials', 0);
 }
 ```
 
-### Tools/Create.jsx
-```jsx
-// Props: { categories }
-import AppLayout from '../../Layouts/AppLayout'
+Key points:
+- A freshly generated ULID (`Str::ulid()->toString()`) is valid ULID syntax but does not exist in the `materials` table, so `Rule::exists('materials', 'id')` will fail.
+- This exercises the `exists` rule in `AttachMaterialRequest` without needing to use an obviously invalid value.
 
-export default function ToolsCreate({ categories }) {
-  return (
-    <AppLayout>
-      <h1>Add Tool</h1>
-      <p>Tool creation form will appear here.</p>
-    </AppLayout>
-  )
-}
-```
+---
 
-### Tools/Edit.jsx
-```jsx
-// Props: { tool, categories }
-import AppLayout from '../../Layouts/AppLayout'
+## 6. Key Decisions
 
-export default function ToolsEdit({ tool, categories }) {
-  return (
-    <AppLayout>
-      <h1>Edit Tool: {tool?.name ?? 'Loading...'}</h1>
-      <p>Tool edit form will appear here.</p>
-    </AppLayout>
-  )
-}
-```
+### Decision 1: Storage::fake('public') scope
 
-### Finance/Index.jsx
-```jsx
-// Props: { expenses, revenues, summary }
-import AppLayout from '../../Layouts/AppLayout'
+`Storage::fake('public')` must be called at the start of each photo test method (not in `setUp()`), keeping the fake isolated to that test. The fake is automatically reset between tests because `RefreshDatabase` runs in a transaction, but the Storage fake is process-level. Calling it per-test is the safest pattern.
 
-export default function FinanceIndex({ expenses, revenues, summary }) {
-  return (
-    <AppLayout>
-      <h1>Finance</h1>
-      <p>Expense and revenue tracking, monthly summaries, and charts will appear here.</p>
-    </AppLayout>
-  )
-}
-```
+Alternatively, a `setUp()` method calling `Storage::fake('public')` would work too, but would add fake storage overhead to every test including non-photo tests. Per-test is preferred here.
 
-### CutList/Index.jsx
-```jsx
-// Props: { boards, pieces, result }
-import AppLayout from '../../Layouts/AppLayout'
+### Decision 2: assertRedirect() vs assertStatus(302)
 
-export default function CutListIndex({ boards, pieces, result }) {
-  return (
-    <AppLayout>
-      <h1>Cut List Optimizer</h1>
-      <p>Board and piece input, optimization controls, and visual output will appear here.</p>
-    </AppLayout>
-  )
-}
-```
+The controller stubs currently return `redirect()->back()`. Using `assertRedirect()` (without a specific URL argument) is more resilient to future changes in redirect destination. Once controllers are fully implemented they may redirect to `route('projects.show', $project)` — the test should not break when that happens.
 
-### Portfolio/Index.jsx
-```jsx
-// Props: { photos }
-// NOTE: No AppLayout — this is a public page with no authentication requirement.
+### Decision 3: Route parameter for {entry} uses ULID id
 
-export default function PortfolioIndex({ photos }) {
-  return (
-    <main>
-      <h1>Portfolio</h1>
-      <p>Public photo gallery will appear here.</p>
-    </main>
-  )
+The route `PUT /projects/{project}/time/{entry}/stop` uses implicit model binding. The `TimeEntry` model uses `HasUlids`, meaning its primary key is a ULID. Laravel resolves `{entry}` by the primary key by default (since `TimeEntry` does not override `getRouteKeyName()`). Therefore the URL must use `$entry->id` (the ULID string), not an integer.
+
+### Decision 4: assertDatabaseHas vs assertDatabaseCount
+
+Tests that verify a record was created use `assertDatabaseHas` with at least the foreign key (`project_id`) and one identifying field. Tests that verify nothing was created use `assertDatabaseCount` with `0` — this is more definitive than `assertDatabaseMissing`.
+
+### Decision 5: No test for unauthenticated sub-resource access
+
+The acceptance criteria do not require guest-redirect tests for sub-resources. These are already covered by the middleware group and implicitly tested by `ProjectControllerTest`. Adding them here would be redundant.
+
+---
+
+## 7. Dependencies
+
+| Dependency | Status | Notes |
+|------------|--------|-------|
+| `tests/Feature/ProjectControllerTest.php` | Exists | Provides the pattern to follow |
+| `App\Models\Project` (with `HasUlids`, slug binding) | Exists | Used in all tests |
+| `App\Models\User` | Exists | Auth user for all tests |
+| `App\Models\ProjectPhoto` | Exists | Asserted in photo tests |
+| `App\Models\TimeEntry` (with `running()` factory state) | Exists | Used in time tests |
+| `App\Models\ProjectNote` | Exists | Asserted in note tests |
+| `App\Models\Material` | Exists | Created in material tests |
+| `App\Models\ProjectMaterial` | Exists | Pivot table asserted in material tests |
+| `App\Http\Requests\StoreProjectPhotoRequest` | Exists | Defines photo validation rules |
+| `App\Http\Requests\LogTimeRequest` | Exists | Defines time validation rules |
+| `App\Http\Requests\AttachMaterialRequest` | Exists | Defines material validation rules |
+| `App\Http\Requests\AddNoteRequest` | Exists | Defines note validation rules |
+| Controller methods (uploadPhoto, logTime, stopTimer, attachMaterial, addNote) | Stubs exist | Currently return `redirect()->back()` — tests assert DB side-effects, not redirect targets |
+
+---
+
+## 8. Risks
+
+| Risk | Likelihood | Mitigation |
+|------|------------|------------|
+| Controller stubs do not apply Form Requests yet — validation will not fire | High | The test plan accounts for this: 422 tests may fail until controllers are wired to use Form Requests. The tests are written for the target state and will pass once controllers are fully implemented. Note this in the PR description. |
+| `{entry}` route binding fails because entry belongs to a different project | Low | Laravel's implicit binding does not scope sub-resources by default. If the controller does not scope `$entry` to `$project`, these tests still pass. Scoping can be added later. |
+| `Storage::fake` not reset between tests | Very low | Each photo test calls `Storage::fake('public')` at the start of the method body, ensuring a fresh fake for each run. |
+| `Str::ulid()` in PHP 8.3 returns a `Symfony\Component\Uid\Ulid` object | Low | Call `->toString()` explicitly (as shown in test 5.10) to get the string representation for the POST body. |
+
+---
+
+## 9. Acceptance Criteria Coverage
+
+| Acceptance Criterion | Test Method | Section |
+|----------------------|-------------|---------|
+| POST /projects/{slug}/photos with valid image creates ProjectPhoto record | `uploading_valid_image_creates_project_photo` | 5.1 |
+| POST /projects/{slug}/photos with non-image returns 422 | `uploading_non_image_returns_422` | 5.2 |
+| Use Storage::fake('public') for photo tests | Both photo tests call `Storage::fake('public')` | 5.1, 5.2 |
+| POST /projects/{slug}/time with started_at and ended_at creates TimeEntry with duration | `logging_time_with_start_and_end_creates_entry_with_duration` | 5.3 |
+| POST /projects/{slug}/time with only started_at creates running timer | `logging_time_with_only_started_at_creates_running_timer` | 5.4 |
+| POST /projects/{slug}/time without started_at returns 422 | `logging_time_without_started_at_returns_422` | 5.5 |
+| PUT /projects/{slug}/time/{entry}/stop sets ended_at and duration | `stopping_timer_sets_ended_at_and_duration` | 5.6 |
+| POST /projects/{slug}/notes with valid content creates ProjectNote | `adding_note_with_valid_content_creates_project_note` | 5.7 |
+| POST /projects/{slug}/notes with empty content returns 422 | `adding_note_with_empty_content_returns_422` | 5.8 |
+| POST /projects/{slug}/materials with valid data creates pivot row | `attaching_material_with_valid_data_creates_pivot_row` | 5.9 |
+| POST /projects/{slug}/materials with non-existent material_id returns 422 | `attaching_material_with_non_existent_material_id_returns_422` | 5.10 |
+| All use RefreshDatabase, #[Test], factories, actingAs() | All 10 test methods | All sections |
+
+---
+
+## 10. Complete File
+
+```php
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Material;
+use App\Models\Project;
+use App\Models\ProjectNote;
+use App\Models\ProjectPhoto;
+use App\Models\TimeEntry;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+
+class ProjectSubResourceTest extends TestCase
+{
+    use RefreshDatabase;
+
+    // -------------------------------------------------------------------------
+    // Photo Tests
+    // -------------------------------------------------------------------------
+
+    #[Test]
+    public function uploading_valid_image_creates_project_photo(): void
+    {
+        Storage::fake('public');
+
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+        $file    = UploadedFile::fake()->image('photo.jpg');
+
+        $response = $this->actingAs($user)
+            ->post('/projects/' . $project->slug . '/photos', [
+                'photo'   => $file,
+                'caption' => 'Test caption',
+            ]);
+
+        $response->assertRedirect();
+        $this->assertDatabaseHas('project_photos', [
+            'project_id' => $project->id,
+            'caption'    => 'Test caption',
+        ]);
+    }
+
+    #[Test]
+    public function uploading_non_image_returns_422(): void
+    {
+        Storage::fake('public');
+
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+        $file    = UploadedFile::fake()->create('document.pdf', 100, 'application/pdf');
+
+        $response = $this->actingAs($user)
+            ->post('/projects/' . $project->slug . '/photos', [
+                'photo' => $file,
+            ]);
+
+        $response->assertStatus(422);
+        $this->assertDatabaseCount('project_photos', 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Time Entry Tests
+    // -------------------------------------------------------------------------
+
+    #[Test]
+    public function logging_time_with_start_and_end_creates_entry_with_duration(): void
+    {
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+
+        $response = $this->actingAs($user)
+            ->post('/projects/' . $project->slug . '/time', [
+                'started_at' => '2026-03-03 09:00:00',
+                'ended_at'   => '2026-03-03 10:30:00',
+            ]);
+
+        $response->assertRedirect();
+        $this->assertDatabaseHas('time_entries', [
+            'project_id'       => $project->id,
+            'duration_minutes' => 90,
+        ]);
+    }
+
+    #[Test]
+    public function logging_time_with_only_started_at_creates_running_timer(): void
+    {
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+
+        $response = $this->actingAs($user)
+            ->post('/projects/' . $project->slug . '/time', [
+                'started_at' => '2026-03-03 09:00:00',
+            ]);
+
+        $response->assertRedirect();
+        $this->assertDatabaseHas('time_entries', [
+            'project_id'       => $project->id,
+            'ended_at'         => null,
+            'duration_minutes' => null,
+        ]);
+    }
+
+    #[Test]
+    public function logging_time_without_started_at_returns_422(): void
+    {
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+
+        $response = $this->actingAs($user)
+            ->post('/projects/' . $project->slug . '/time', [
+                'ended_at' => '2026-03-03 10:00:00',
+            ]);
+
+        $response->assertStatus(422);
+        $this->assertDatabaseCount('time_entries', 0);
+    }
+
+    #[Test]
+    public function stopping_timer_sets_ended_at_and_duration(): void
+    {
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+        $entry   = TimeEntry::factory()->running()->create([
+            'project_id' => $project->id,
+            'started_at' => now()->subHour(),
+        ]);
+
+        $response = $this->actingAs($user)
+            ->put('/projects/' . $project->slug . '/time/' . $entry->id . '/stop');
+
+        $response->assertRedirect();
+        $entry->refresh();
+        $this->assertNotNull($entry->ended_at);
+        $this->assertNotNull($entry->duration_minutes);
+        $this->assertGreaterThan(0, $entry->duration_minutes);
+    }
+
+    // -------------------------------------------------------------------------
+    // Note Tests
+    // -------------------------------------------------------------------------
+
+    #[Test]
+    public function adding_note_with_valid_content_creates_project_note(): void
+    {
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+
+        $response = $this->actingAs($user)
+            ->post('/projects/' . $project->slug . '/notes', [
+                'content' => 'This is a workshop note about the dovetail joints.',
+            ]);
+
+        $response->assertRedirect();
+        $this->assertDatabaseHas('project_notes', [
+            'project_id' => $project->id,
+            'content'    => 'This is a workshop note about the dovetail joints.',
+        ]);
+    }
+
+    #[Test]
+    public function adding_note_with_empty_content_returns_422(): void
+    {
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+
+        $response = $this->actingAs($user)
+            ->post('/projects/' . $project->slug . '/notes', [
+                'content' => '',
+            ]);
+
+        $response->assertStatus(422);
+        $this->assertDatabaseCount('project_notes', 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Material Tests
+    // -------------------------------------------------------------------------
+
+    #[Test]
+    public function attaching_material_with_valid_data_creates_pivot_row(): void
+    {
+        $user     = User::factory()->create();
+        $project  = Project::factory()->create();
+        $material = Material::factory()->create();
+
+        $response = $this->actingAs($user)
+            ->post('/projects/' . $project->slug . '/materials', [
+                'material_id'   => $material->id,
+                'quantity_used' => 2.5,
+            ]);
+
+        $response->assertRedirect();
+        $this->assertDatabaseHas('project_materials', [
+            'project_id'  => $project->id,
+            'material_id' => $material->id,
+        ]);
+    }
+
+    #[Test]
+    public function attaching_material_with_non_existent_material_id_returns_422(): void
+    {
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+
+        $fakeUlid = Str::ulid()->toString();
+
+        $response = $this->actingAs($user)
+            ->post('/projects/' . $project->slug . '/materials', [
+                'material_id'   => $fakeUlid,
+                'quantity_used' => 1.0,
+            ]);
+
+        $response->assertStatus(422);
+        $this->assertDatabaseCount('project_materials', 0);
+    }
 }
 ```

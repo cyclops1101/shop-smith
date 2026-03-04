@@ -1,5 +1,59 @@
 import { Link, Head, router, usePage } from '@inertiajs/react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+
+function formatElapsed(ms) {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function TimerWidget() {
+    const { activeTimer } = usePage().props;
+    const [elapsed, setElapsed] = useState(0);
+
+    useEffect(() => {
+        if (!activeTimer) {
+            setElapsed(0);
+            return;
+        }
+        const startMs = new Date(activeTimer.started_at).getTime();
+        setElapsed(Date.now() - startMs);
+        const interval = setInterval(() => {
+            setElapsed(Date.now() - startMs);
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [activeTimer]);
+
+    const isRunning = !!activeTimer;
+    const display = formatElapsed(elapsed);
+
+    if (isRunning) {
+        return (
+            <button
+                type="button"
+                onClick={() => router.visit('/projects/' + activeTimer.project_slug)}
+                className="flex items-center space-x-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 transition-colors hover:bg-amber-100"
+                title={`Tracking: ${activeTimer.project_title}`}
+            >
+                {/* pulsing dot */}
+                <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                <span className="font-mono text-sm font-medium text-amber-700">{display}</span>
+            </button>
+        );
+    }
+
+    return (
+        <div className="flex items-center space-x-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5">
+            <svg className="h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+            </svg>
+            <span className="font-mono text-sm font-medium text-gray-400">00:00:00</span>
+        </div>
+    );
+}
 
 const navLinks = [
     { href: '/dashboard', label: 'Dashboard', exact: true },
@@ -71,25 +125,8 @@ export default function AppLayout({ children, title }) {
 
                         {/* Right: Timer Widget + User Dropdown */}
                         <div className="hidden sm:flex sm:items-center sm:space-x-4">
-                            {/* Timer Widget Placeholder */}
-                            <div className="flex items-center space-x-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5">
-                                <svg
-                                    className="h-4 w-4 text-gray-500"
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="2"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                >
-                                    <circle cx="12" cy="12" r="10" />
-                                    <polyline points="12 6 12 12 16 14" />
-                                </svg>
-                                <span className="font-mono text-sm font-medium text-gray-700">
-                                    00:00:00
-                                </span>
-                            </div>
+                            {/* Timer Widget */}
+                            <TimerWidget />
 
                             {/* User Dropdown */}
                             <div className="relative">
@@ -144,9 +181,7 @@ export default function AppLayout({ children, title }) {
                         {/* Mobile: Timer + Hamburger */}
                         <div className="flex items-center space-x-3 sm:hidden">
                             {/* Timer Widget (mobile) */}
-                            <span className="font-mono text-sm font-medium text-gray-700">
-                                00:00:00
-                            </span>
+                            <TimerWidget />
 
                             {/* Hamburger Button */}
                             <button

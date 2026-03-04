@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\TimeEntry;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 
@@ -42,6 +43,25 @@ class HandleInertiaRequests extends Middleware
                 'info'    => $request->session()->get('info'),
             ],
             'appName' => config('app.name'),
+            'activeTimer' => function () use ($request) {
+                if (! $request->user()) {
+                    return null;
+                }
+
+                $entry = TimeEntry::running()->with('project:id,slug,title')->first();
+
+                if (! $entry) {
+                    return null;
+                }
+
+                return [
+                    'id' => $entry->id,
+                    'project_id' => $entry->project_id,
+                    'project_slug' => $entry->project->slug,
+                    'project_title' => $entry->project->title,
+                    'started_at' => $entry->started_at->toISOString(),
+                ];
+            },
         ]);
     }
 }

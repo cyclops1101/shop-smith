@@ -1,8 +1,7 @@
-# Task 01 Plan: Install Breeze with React + Inertia Stack
+# Task 01 Plan: Project CRUD Backend
 
 **Task ID:** 01
-**Domain:** fullstack
-**Parallel Group:** 1 (no dependencies — runs first)
+**Domain:** backend
 **Complexity:** medium
 **Status:** pending
 
@@ -10,225 +9,346 @@
 
 ## 1. Approach
 
-This task installs Laravel Breeze with the React + Inertia variant into a fresh Laravel 12 install that currently has no React, no Inertia, and no auth pages. The install is performed using Breeze's Artisan scaffolding command, which handles everything from Composer packages to Vite configuration in a single pass. An additional Composer package (`intervention/image`) is installed for photo thumbnail generation needed in later phases.
+All seven CRUD methods on `ProjectController` are currently stubs. The implementation strategy is:
 
-The approach is purely command-driven — no manual file creation is required. Breeze's scaffolding generates all the expected files. Post-install, a Vite build confirms the full JS toolchain is wired correctly.
+1. Read the validated data from the two existing Form Requests without touching them.
+2. Implement each controller method in one focused edit to `ProjectController.php`.
+3. Expand the existing `ProjectControllerTest.php` with full coverage tests using PHPUnit 11 `#[Test]` attributes.
 
-**Why Breeze instead of Laravel's new starter kits?**
-Laravel 12 introduced new Fortify-based starter kits installable via `laravel new`. However, this project already exists as a fresh install. The `laravel/breeze` Composer package continues to be the correct mechanism for adding Breeze to an existing project. The `breeze:install react --ssr` Artisan command is the authoritative install path for this scenario.
-
----
-
-## 2. Files to Create or Modify
-
-| File | Action | Notes |
-|------|--------|-------|
-| `composer.json` | modified | adds `laravel/breeze` (dev), `intervention/image` |
-| `composer.lock` | modified | updated lock file |
-| `package.json` | modified | adds `react`, `react-dom`, `@inertiajs/react`, `@vitejs/plugin-react` |
-| `package-lock.json` | modified | updated lock file |
-| `vite.config.js` | modified | adds `@vitejs/plugin-react`, changes input from `app.js` to `app.jsx`, adds SSR config |
-| `bootstrap/app.php` | modified | `HandleInertiaRequests` middleware registered in web middleware stack |
-| `routes/web.php` | modified | auth routes added by Breeze |
-| `routes/auth.php` | created | Breeze auth route definitions |
-| `app/Http/Middleware/HandleInertiaRequests.php` | created | Inertia request middleware |
-| `resources/views/app.blade.php` | created | Inertia root HTML template |
-| `resources/js/app.jsx` | created | Inertia + React bootstrap entry point |
-| `resources/js/ssr.jsx` | created | SSR entry point (from `--ssr` flag) |
-| `resources/js/bootstrap.js` | created | Axios setup |
-| `resources/js/Pages/Auth/Login.jsx` | created | Breeze login page |
-| `resources/js/Pages/Auth/Register.jsx` | created | Breeze register page |
-| `resources/js/Pages/Auth/ForgotPassword.jsx` | created | Breeze forgot password page |
-| `resources/js/Pages/Auth/ResetPassword.jsx` | created | Breeze reset password page |
-| `resources/js/Pages/Auth/ConfirmPassword.jsx` | created | Breeze confirm password page |
-| `resources/js/Pages/Auth/VerifyEmail.jsx` | created | Breeze verify email page |
-| `resources/js/Pages/Dashboard.jsx` | created | Breeze dashboard stub (replaced later by Task 10) |
-| `resources/js/Pages/Profile/Edit.jsx` | created | Breeze profile page |
-| `resources/js/Layouts/AuthenticatedLayout.jsx` | created | Breeze authenticated shell layout |
-| `resources/js/Layouts/GuestLayout.jsx` | created | Breeze guest/auth shell layout |
-| `resources/js/Components/` (multiple) | created | Breeze UI primitives: ApplicationLogo, Checkbox, DangerButton, Dropdown, InputError, InputLabel, Modal, NavLink, PrimaryButton, ResponsiveNavLink, SecondaryButton, TextInput |
+The controller stays thin. Filtering and search logic live in the query chain in `index()` using Eloquent scopes and Scout — no service class is needed at this scope. Flash messages use Laravel's `with()` on the redirect. No new files are created beyond the plan document.
 
 ---
 
-## 3. Exact Commands to Run
+## 2. Files to Modify
 
-Run these commands in order inside the project directory. All use `./vendor/bin/sail` as the command prefix since this is a Sail project.
+| File | Action | Reason |
+|------|--------|--------|
+| `app/Http/Controllers/ProjectController.php` | Modify | Replace all 7 stub methods with real implementations |
+| `tests/Feature/ProjectControllerTest.php` | Modify | Add complete test coverage for all 7 methods |
 
-### Step 1 — Start Sail (if not already running)
+No new files are created. `StoreProjectRequest`, `UpdateProjectRequest`, `Project`, `ProjectStatus`, and `ProjectPriority` are all read-only dependencies that are already correct.
 
-```bash
-./vendor/bin/sail up -d
+---
+
+## 3. Implementation Detail
+
+### 3.1 Imports to Add to ProjectController
+
+The current import block covers `Project`, `TimeEntry`, `Request`, `Inertia`, `Response`, and `RedirectResponse`. The implementation needs two additional imports:
+
+```php
+use App\Enums\ProjectPriority;
+use App\Enums\ProjectStatus;
+use App\Http\Requests\StoreProjectRequest;
+use App\Http\Requests\UpdateProjectRequest;
 ```
 
-### Step 2 — Require laravel/breeze as a dev dependency
+`Request` can be removed from the imports once all stub signatures that typed it are replaced — `store()` and `update()` will use the typed Form Request classes instead.
 
-```bash
-./vendor/bin/sail composer require laravel/breeze --dev
+### 3.2 index()
+
+```php
+public function index(Request $request): Response
+{
+    $filters = $request->only(['search', 'status', 'priority']);
+
+    $projects = Project::query()
+        ->when($filters['search'] ?? null, fn ($q, $search) =>
+            $q->whereIn('id', Project::search($search)->keys())
+        )
+        ->when($filters['status'] ?? null, fn ($q, $status) =>
+            $q->where('status', $status)
+        )
+        ->when($filters['priority'] ?? null, fn ($q, $priority) =>
+            $q->where('priority', $priority)
+        )
+        ->latest()
+        ->paginate(15)
+        ->withQueryString();
+
+    return Inertia::render('Projects/Index', [
+        'projects' => $projects,
+        'filters'  => $filters,
+    ]);
+}
 ```
 
-Adds `laravel/breeze` to `require-dev` in `composer.json`. Breeze is a scaffolding tool with no runtime presence after its scaffolding runs; `--dev` is the correct placement.
+**Search approach:** The project uses Laravel Scout with the database driver (`toSearchableArray()` already defined on the model). Scout's `search()->keys()` returns matching ULIDs, which feeds a `whereIn` on the Eloquent query. This combines Scout's full-text search with Eloquent's filter chain cleanly. The database Scout driver works synchronously — no queue needed for search.
 
-### Step 3 — Run the Breeze installer for React + Inertia with SSR
+**Pagination:** `paginate(15)` with `withQueryString()` preserves filter params across pagination links. Inertia serialises the `LengthAwarePaginator` automatically; the frontend receives `data`, `links`, `meta`, and `current_page`.
 
-```bash
-./vendor/bin/sail artisan breeze:install react --ssr
+**Filter passing:** The `$filters` array is passed as-is to Inertia so the frontend can initialise form fields from it.
+
+### 3.3 create()
+
+```php
+public function create(): Response
+{
+    return Inertia::render('Projects/Create', [
+        'statuses'   => collect(ProjectStatus::cases())->map(fn ($s) => [
+            'value' => $s->value,
+            'label' => $s->label(),
+        ]),
+        'priorities' => collect(ProjectPriority::cases())->map(fn ($p) => [
+            'value' => $p->value,
+            'label' => $p->label(),
+        ]),
+    ]);
+}
 ```
 
-This single command performs:
-1. Publishes `app/Http/Middleware/HandleInertiaRequests.php`
-2. Registers `HandleInertiaRequests` in `bootstrap/app.php` web middleware stack
-3. Creates `resources/views/app.blade.php` (Inertia root HTML template with `@inertia` directive)
-4. Creates `resources/js/app.jsx` with `createInertiaApp` using React renderer
-5. Creates `resources/js/ssr.jsx` as the server-side rendering entry point
-6. Creates all Breeze auth pages under `resources/js/Pages/Auth/`
-7. Creates `resources/js/Pages/Dashboard.jsx` as a minimal stub
-8. Creates `resources/js/Layouts/AuthenticatedLayout.jsx` and `GuestLayout.jsx`
-9. Creates `resources/js/Components/` with Breeze UI primitives
-10. Updates `vite.config.js` to add `@vitejs/plugin-react` and the `app.jsx` + `ssr.jsx` inputs
-11. Updates `package.json` to add React, react-dom, @inertiajs/react, @vitejs/plugin-react
-12. Creates `routes/auth.php` and includes it in `routes/web.php`
+Each enum is mapped to a plain `{ value, label }` array. This is the pattern Inertia components expect for `<select>` population. The `value` is the backed string value (e.g., `'in_progress'`); the `label` is the human-readable string (e.g., `'In Progress'`). JSON serialisation of the raw enum cases would expose only the `value` property — the explicit map ensures `label()` is called on the PHP side.
 
-### Step 4 — Require intervention/image
+### 3.4 store()
 
-```bash
-./vendor/bin/sail composer require intervention/image
+```php
+public function store(StoreProjectRequest $request): RedirectResponse
+{
+    $project = Project::create($request->validated());
+
+    return redirect()
+        ->route('projects.show', $project)
+        ->with('success', 'Project created successfully.');
+}
 ```
 
-Installs `intervention/image` v3.x (the PHP 8.x compatible major version). This package is used in later phases for photo thumbnail generation. Installing it now satisfies the Task 01 acceptance criterion and avoids a separate Composer install step later. The Sail container includes the GD extension by default, which is the required image driver for `intervention/image` v3.
+`$request->validated()` returns only the fields that passed the Form Request rules. The `Project::create()` call hits the `booted()` observer which auto-generates the slug from `title`. Route model binding on `projects.show` resolves the project by its `slug` (via `getRouteKeyName()`), so passing `$project` to `route()` works correctly.
 
-### Step 5 — Install npm dependencies
+### 3.5 show()
 
-```bash
-./vendor/bin/sail npm install
+```php
+public function show(Project $project): Response
+{
+    return Inertia::render('Projects/Show', [
+        'project' => $project,
+    ]);
+}
 ```
 
-Installs the new packages added to `package.json` by `breeze:install`: `react`, `react-dom`, `@inertiajs/react`, `@vitejs/plugin-react`.
+Minimal as specified — Task 07 handles eager loading of relations. Route model binding resolves by slug.
 
-### Step 6 — Run migrations
+### 3.6 edit()
 
-```bash
-./vendor/bin/sail artisan migrate
+```php
+public function edit(Project $project): Response
+{
+    return Inertia::render('Projects/Edit', [
+        'project'    => $project,
+        'statuses'   => collect(ProjectStatus::cases())->map(fn ($s) => [
+            'value' => $s->value,
+            'label' => $s->label(),
+        ]),
+        'priorities' => collect(ProjectPriority::cases())->map(fn ($p) => [
+            'value' => $p->value,
+            'label' => $p->label(),
+        ]),
+    ]);
+}
 ```
 
-Applies the baseline Laravel migrations (users, password_reset_tokens, sessions, cache, jobs tables). Breeze does not add new migrations of its own, but this confirms the database connection is working and the schema baseline is in place.
+Identical enum mapping as `create()`. The `project` prop lets the frontend pre-populate form fields.
 
-### Step 7 — Verify build succeeds
+### 3.7 update()
 
-```bash
-./vendor/bin/sail npm run build
+```php
+public function update(UpdateProjectRequest $request, Project $project): RedirectResponse
+{
+    $project->update($request->validated());
+
+    return redirect()
+        ->route('projects.show', $project)
+        ->with('success', 'Project updated successfully.');
+}
 ```
 
-Confirms Vite can compile the full React + Inertia + Tailwind stack without errors. This is the primary smoke test for the install.
+`UpdateProjectRequest` uses `sometimes` on all fields, so PATCH requests with partial payloads work correctly. The slug is not in the `fillable` array's update path — it was set at creation and is never changed by update.
+
+### 3.8 destroy()
+
+```php
+public function destroy(Project $project): RedirectResponse
+{
+    $project->delete();
+
+    return redirect()
+        ->route('projects.index')
+        ->with('success', 'Project deleted.');
+}
+```
+
+`SoftDeletes` is applied on the model, so `$project->delete()` sets `deleted_at` rather than removing the row. The redirect goes to the index (not back to the deleted project's show page).
 
 ---
 
 ## 4. Key Decisions
 
-### Decision 1: Use `--ssr` flag
+### Decision 1: Scout `search()->keys()` feeds a `whereIn` — not `Project::search()->get()`
 
-The task manifest specifies `--ssr`. SSR provides server-rendered first paint for the public Portfolio page, which is a goal from the spec. The SSR entry point (`ssr.jsx`) and SSR build config are scaffolded automatically. The SSR build does not run by default in `npm run dev`; it requires a separate `npm run build:ssr` command, so it adds no friction to daily development.
+`Project::search($term)->get()` returns a Scout Collection that bypasses Eloquent's `when()` filter chain and `paginate()`. Using `Project::search($term)->keys()` returns matching IDs and feeds them into the regular Eloquent query, keeping all filter conditions and pagination on one query path. This is the standard Laravel Scout + Eloquent composition pattern for combined filter+search.
 
-If `--ssr` causes issues on the specific Breeze version installed, fall back to `breeze:install react` (without SSR) and note the deviation. The non-SSR path is fully functional for all app features; SSR on the portfolio page would then require a later dedicated implementation.
+**Caveat:** If the search term is empty, `keys()` is never called and the query runs as a standard Eloquent query, which is the correct behaviour — no performance penalty when `?search=` is absent.
 
-### Decision 2: intervention/image installed now, not later
+### Decision 2: Filters passed back as the raw `only()` array
 
-The Task 01 acceptance criterion explicitly requires `intervention/image` in `composer.json`. Installing it here keeps later tasks focused on implementation. The package has no side effects until its Facade is called.
+The `$filters` array contains whatever the user sent (`null` for absent keys). Passing it to Inertia as-is means the frontend always has the full filter shape, even when values are `null`. The alternative — only passing non-null filters — makes initialising controlled form inputs more fragile on the frontend.
 
-### Decision 3: Breeze-generated components are not the shadcn primitives
+### Decision 3: Flash messages use `with('success', ...)` string convention
 
-Breeze scaffolds its own component files into `resources/js/Components/` (e.g., `PrimaryButton.jsx`, `TextInput.jsx`, `Modal.jsx`). Task 05 creates shadcn-style UI primitives in `resources/js/Components/ui/`. These are separate directories and do not conflict. The Breeze components are used by Breeze's auth pages only; app feature pages use the `ui/` primitives from Task 05.
+Laravel's session flash with a `'success'` key is the standard Inertia flash pattern. The shared `HandleInertiaRequests` middleware already shares flash data via `$request->session()->get('success')` (or similar). The key name `success` is consistent across all controller redirects in this project.
 
-### Decision 4: `vite.config.js` will be overwritten — restore watch config after
+### Decision 4: No slug regeneration on update
 
-The existing `vite.config.js` has a `server.watch.ignored` block for `storage/framework/views/`. Breeze's install overwrites `vite.config.js` with a new config. After `breeze:install` runs, manually verify the output `vite.config.js` and add back the `server.watch.ignored` setting if it is missing:
+The `UpdateProjectRequest` does not include `slug`. The `fillable` array on `Project` includes `slug`, but the Form Request never validates or passes it, so `update($request->validated())` will never touch the slug. Route model binding continues to work after an update because the slug remains the same. This avoids broken bookmarks/links from slug changes.
 
-```js
-server: {
-    watch: {
-        ignored: ['**/storage/framework/views/**'],
-    },
-},
-```
+### Decision 5: `paginate(15)` — not `simplePaginate`
 
-### Decision 5: `resources/js/app.js` is replaced by `app.jsx`
-
-The existing project has `resources/js/app.js` and `vite.config.js` references it. After `breeze:install`, `app.jsx` is created and `vite.config.js` is updated to reference it. The old `app.js` file may or may not be removed by Breeze. Confirm `resources/js/app.jsx` exists and `vite.config.js` input references it. If the old `app.js` still exists, it can be deleted.
+`paginate(15)` returns a `LengthAwarePaginator` with total count and page links. `simplePaginate` omits the total count. The acceptance criterion says "paginates (15/page)" and the frontend will likely want to show "Page X of Y" — `paginate` is the safe choice.
 
 ---
 
 ## 5. Verified Dependencies
 
-| Package | Version | Registry | Verification |
-|---------|---------|----------|-------------|
-| `laravel/breeze` | ^2.x | Composer | Supports Laravel 12; `breeze:install react --ssr` command exists in v2 |
-| `intervention/image` | ^3.x | Composer | PHP 8.x support; GD driver available in Sail container (php8.3-gd) |
-| `@inertiajs/react` | Installed by Breeze | npm | Inertia 2.x; compatible with React 19 |
-| `react` + `react-dom` | ^19 | npm | Installed by Breeze; compatible with Inertia 2.x |
-| `@vitejs/plugin-react` | Installed by Breeze | npm | Vite 7 compatible |
-| `tailwindcss` | ^4.0.0 | npm | Already in project; no conflict with Breeze install |
-| `@tailwindcss/vite` | ^4.0.0 | npm | Already in project; no conflict with Breeze install |
-
-The project already has `tailwindcss ^4.0.0` and `@tailwindcss/vite ^4.0.0`. Breeze may attempt to scaffold a `tailwind.config.js` (Tailwind 3 convention). Since this project uses Tailwind 4's CSS-first configuration (no `tailwind.config.js`), do not commit any generated `tailwind.config.js` file if one appears.
+| Dependency | Location | Status |
+|-----------|----------|--------|
+| `ProjectStatus` enum with `label()` | `app/Enums/ProjectStatus.php` | Verified — 7 cases, all have `label()` |
+| `ProjectPriority` enum with `label()` | `app/Enums/ProjectPriority.php` | Verified — 4 cases, all have `label()` |
+| `StoreProjectRequest` with full rules | `app/Http/Requests/StoreProjectRequest.php` | Verified — 12 validated fields |
+| `UpdateProjectRequest` with `sometimes` rules | `app/Http/Requests/UpdateProjectRequest.php` | Verified — same 12 fields, all `sometimes` |
+| `Project::search()` (Scout Searchable) | `app/Models/Project.php` line 19 | Verified — `Searchable` trait used |
+| `Project::toSearchableArray()` | `app/Models/Project.php` lines 74-83 | Verified — indexes title, description, client_name, notes |
+| `Project` soft deletes | `app/Models/Project.php` line 19 | Verified — `SoftDeletes` trait used |
+| `Project` slug route key | `app/Models/Project.php` lines 69-72 | Verified — `getRouteKeyName()` returns `'slug'` |
+| `Project` slug auto-generation | `app/Models/Project.php` lines 52-67 | Verified — `booted()` generates unique slug on create |
+| `Route::resource('projects', ...)` | `routes/web.php` line 32 | Verified — all 7 CRUD routes registered |
+| `status` and `priority` DB indexes | `database/migrations/..._create_projects_table.php` | Verified — both indexed for filter queries |
+| Scout database driver | Assumed from CLAUDE.md ("Laravel Scout with database driver") | Not inspected in config — confirm `SCOUT_DRIVER=database` in `.env` |
+| `ProjectFactory` | `database/factories/ProjectFactory.php` | Verified — uses both enums, generates realistic data |
+| `ProjectControllerTest` with `#[Test]` attributes | `tests/Feature/ProjectControllerTest.php` | Verified — PHPUnit 11 style, 5 existing tests |
 
 ---
 
 ## 6. Risks and Mitigations
 
-### Risk 1: Breeze installs Tailwind 3 config alongside Tailwind 4
+### Risk 1: Scout database driver not configured
 
-**Risk:** `breeze:install` may publish a `tailwind.config.js` file because Breeze's templates were built against Tailwind 3. Tailwind 4 uses CSS-based config, not `tailwind.config.js`. The two can coexist, but Tailwind 4 will ignore the `.js` config file, which may cause confusion.
+**Risk:** If `SCOUT_DRIVER` is not set to `database` in the test environment, `Project::search()->keys()` may hit a null or Algolia driver and throw or return empty results.
 
-**Mitigation:** After install, check for a generated `tailwind.config.js`. If found, delete it. The project's existing `@tailwindcss/vite` plugin in `vite.config.js` is the correct Tailwind 4 setup. Breeze's auth pages use standard utility classes (not `@apply`) and are compatible with Tailwind 4 as long as the plugin is running.
+**Mitigation:** In the test for search, assert that a project with the search term in its title is returned (and one without is not). If the Scout driver is not `database`, the test fails with a clear error pointing to the config, not a silent wrong result. Add a `SCOUT_DRIVER=database` line to `.env.testing` if not present. The `index()` implementation uses `when($search, ...)` — when the search param is absent, Scout is never called and a configuration problem has no effect.
 
-### Risk 2: Laravel 12 Breeze compatibility
+### Risk 2: `Project::search()->keys()` returns ULID strings, `whereIn` on string primary key
 
-**Risk:** Laravel 12 documentation focuses on the new Fortify-based starter kits. The `laravel/breeze` package may have minor incompatibilities with Laravel 12.53.0.
+**Risk:** ULID primary keys are strings. If `whereIn('id', ...)` receives a Collection of strings, it works correctly with MySQL's string comparison. This is not a real risk — just worth noting that integer `id` assumptions don't apply here.
 
-**Mitigation:** `laravel/breeze ^2.x` explicitly supports Laravel 10, 11, and 12. If `breeze:install` fails, check the Breeze GitHub repository for the minimum Laravel version requirement of the installed version. The fallback is to manually scaffold the required files (HandleInertiaRequests, app.blade.php, app.jsx) following the Breeze source.
+**Mitigation:** No action needed. The Scout `keys()` method returns the values of `toSearchableArray()['id']`, which are ULID strings. `whereIn('id', $ulids)` works correctly.
 
-### Risk 3: SSR build failures
+### Risk 3: Flash message key mismatch with HandleInertiaRequests
 
-**Risk:** If `@vitejs/plugin-react` installed by Breeze is incompatible with Vite 7, the SSR build may fail.
+**Risk:** If `HandleInertiaRequests::share()` reads a different key (e.g., `flash.message` rather than `success`), the flash messages will not appear in the frontend. This does not affect controller correctness or tests.
 
-**Mitigation:** `npm run build` (not `build:ssr`) is the acceptance criterion. If SSR build fails but the client build succeeds, the task criteria are still met. Document the SSR issue as a separate concern for later resolution. The app runs without SSR for all phases.
+**Mitigation:** The controller uses `with('success', ...)` consistently. The exact key is a frontend/middleware concern. Document that the frontend must read the `success` flash key from Inertia's shared props. If the project has a different convention, adjust the key in the controller — the test does not assert on flash message content, only on redirect target.
 
-### Risk 4: `intervention/image` v3 vs v2 API
+### Risk 4: Paginator serialisation in Inertia response
 
-**Risk:** Code written for `intervention/image` v2 (which uses `Image::make()`) is incompatible with v3 (which uses `Image::read()`). If the system has v2 cached or if future code references v2 APIs, it will fail at runtime.
+**Risk:** Inertia's resource handling serialises `LengthAwarePaginator` using its `toArray()` representation. If the frontend expects a different shape (e.g., wrapped under a `data` key with separate `meta`), there may be a mismatch.
 
-**Mitigation:** `sail composer require intervention/image` installs the latest stable version, which is v3.x for PHP 8. All code written in later tasks (Task 07, photo upload) must use the v3 API (`Intervention\Image\Laravel\Facades\Image` with `read()` method). This is a documentation/convention note for the implementing agent of Task 07.
+**Mitigation:** This is a frontend concern addressed in the CRUD frontend tasks. The controller passes `$projects` (the paginator) directly — this is the standard Inertia pattern. The test asserts that the Inertia component receives a `projects` prop, not its exact shape.
 
----
+### Risk 5: Existing test `test_authenticated_user_can_view_projects_index` passes on the stub
 
-## 7. Acceptance Criteria Coverage
+**Risk:** The stub `index()` already returns `Inertia::render('Projects/Index')` with no data. The existing test only asserts `assertOk()`, which the stub already passes. After implementation, more assertions are needed to confirm data is passed.
 
-| Criterion | How Met |
-|-----------|---------|
-| `composer.json` includes `laravel/breeze` | Step 2: `sail composer require laravel/breeze --dev` |
-| `composer.json` includes `intervention/image` | Step 4: `sail composer require intervention/image` |
-| `package.json` includes `@inertiajs/react`, `react`, `react-dom`, `@vitejs/plugin-react` | Step 3: `breeze:install react --ssr` updates `package.json` automatically |
-| `resources/js/app.jsx` exists and bootstraps Inertia with React | Step 3: created by `breeze:install` with `createInertiaApp` and React renderer |
-| `resources/js/Pages/Auth/Login.jsx` and other Breeze auth pages exist | Step 3: created by `breeze:install` |
-| `resources/js/Layouts/AuthenticatedLayout.jsx` and `GuestLayout.jsx` exist | Step 3: created by `breeze:install` |
-| `app/Http/Middleware/HandleInertiaRequests.php` exists and is registered | Step 3: published and registered by `breeze:install` in `bootstrap/app.php` |
-| `resources/views/app.blade.php` exists as the Inertia root template | Step 3: created by `breeze:install` with `@inertia` directive |
-| `vite.config.js` includes `@vitejs/plugin-react` | Step 3: `vite.config.js` updated by `breeze:install` |
-| `npm run build` succeeds without errors | Step 7: verified by running build and checking exit code |
-| `php artisan migrate` runs Breeze default migrations without errors | Step 6: runs all pending migrations; confirms DB connection and schema |
+**Mitigation:** The expanded test suite adds `assertInertia` assertions (using the `inertia-laravel` test helpers) to confirm the `projects` and `filters` props are present on the response.
 
 ---
 
-## 8. Post-Install Verification Checklist
+## 7. Test Plan
 
-After all steps complete, verify each item:
+The existing `ProjectControllerTest.php` has 5 tests, all of which only assert HTTP 200. The following tests need to be added:
 
-1. `composer show laravel/breeze` — confirms Breeze is installed
-2. `composer show intervention/image` — confirms image package is installed
-3. `cat package.json | grep '"@inertiajs/react"'` — shows Inertia listed
-4. `ls resources/js/` — shows `app.jsx` (not just `app.js`)
-5. `ls resources/js/Pages/Auth/` — shows `Login.jsx`, `Register.jsx`, etc.
-6. `ls app/Http/Middleware/` — shows `HandleInertiaRequests.php`
-7. `grep -n 'HandleInertiaRequests' bootstrap/app.php` — confirms middleware is registered
-8. `cat resources/views/app.blade.php | grep '@inertia'` — confirms Inertia root template
-9. `cat vite.config.js | grep 'plugin-react'` — confirms React plugin in Vite config
-10. `./vendor/bin/sail npm run build` — exits 0 with no errors
+### New tests to add
+
+```
+test_index_passes_projects_and_filters_to_inertia
+test_index_filters_by_status
+test_index_filters_by_priority
+test_index_searches_by_term
+test_index_paginates_at_15_per_page
+test_create_passes_statuses_and_priorities_to_inertia
+test_store_creates_project_and_redirects_to_show
+test_store_fails_validation_without_title
+test_show_passes_project_to_inertia
+test_edit_passes_project_statuses_and_priorities_to_inertia
+test_update_updates_project_and_redirects_to_show
+test_update_fails_validation_with_invalid_status
+test_destroy_soft_deletes_project_and_redirects_to_index
+test_destroyed_project_not_in_index_results
+```
+
+### Test conventions
+
+- Use `#[Test]` attribute (PHPUnit 11 style, not `/** @test */` docblock)
+- Use `RefreshDatabase` (already present on the class)
+- Use `User::factory()->create()` and `actingAs($user)`
+- Use `Project::factory()->create([...])` for seeded data
+- For Inertia assertions: use `$response->assertInertia(fn ($page) => $page->component('Projects/Index')->has('projects')->has('filters'))`
+- For store/update: assert database state with `$this->assertDatabaseHas('projects', [...])`
+- For destroy: assert soft delete with `$this->assertSoftDeleted('projects', ['id' => $project->id])`
+- Flash messages: assert redirect target only, not flash content (flash is a frontend concern)
+
+### Example: store test
+
+```php
+#[Test]
+public function test_store_creates_project_and_redirects_to_show(): void
+{
+    $user = User::factory()->create();
+
+    $response = $this->actingAs($user)->post('/projects', [
+        'title' => 'My Cabinet Build',
+    ]);
+
+    $this->assertDatabaseHas('projects', ['title' => 'My Cabinet Build']);
+
+    $project = Project::where('title', 'My Cabinet Build')->first();
+
+    $response->assertRedirect(route('projects.show', $project));
+}
+```
+
+### Example: destroy test
+
+```php
+#[Test]
+public function test_destroy_soft_deletes_project_and_redirects_to_index(): void
+{
+    $user = User::factory()->create();
+    $project = Project::factory()->create();
+
+    $response = $this->actingAs($user)->delete('/projects/' . $project->slug);
+
+    $response->assertRedirect(route('projects.index'));
+    $this->assertSoftDeleted('projects', ['id' => $project->id]);
+}
+```
+
+---
+
+## 8. Acceptance Criteria Coverage
+
+| Criterion | Implementation |
+|-----------|---------------|
+| `index()` accepts `?search=`, `?status=`, `?priority=` | `$request->only(['search', 'status', 'priority'])` + `when()` chain in query |
+| `index()` paginates at 15/page | `->paginate(15)->withQueryString()` |
+| `index()` passes `{ projects, filters }` to Inertia | `Inertia::render('Projects/Index', ['projects' => ..., 'filters' => ...])` |
+| `create()` passes `{ statuses, priorities }` with `label()` | Enum `cases()` mapped to `{ value, label }` arrays |
+| `store()` uses `StoreProjectRequest` | Method signature: `store(StoreProjectRequest $request)` |
+| `store()` creates project | `Project::create($request->validated())` |
+| `store()` redirects to `projects.show` with flash | `redirect()->route('projects.show', $project)->with('success', ...)` |
+| `show()` passes `{ project }` | `Inertia::render('Projects/Show', ['project' => $project])` |
+| `edit()` passes `{ project, statuses, priorities }` | Same enum mapping + `$project` in props |
+| `update()` uses `UpdateProjectRequest` | Method signature: `update(UpdateProjectRequest $request, Project $project)` |
+| `update()` redirects with flash | `redirect()->route('projects.show', $project)->with('success', ...)` |
+| `destroy()` soft-deletes | `$project->delete()` — `SoftDeletes` trait handles the rest |
+| `destroy()` redirects to index with flash | `redirect()->route('projects.index')->with('success', ...)` |
+| Route model binding by slug | `getRouteKeyName()` already returns `'slug'` on the model — no controller change needed |
+| Form requests handle all validation | No `$request->validate()` calls in the controller — Form Request classes used exclusively |

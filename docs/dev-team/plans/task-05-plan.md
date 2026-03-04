@@ -1,27 +1,39 @@
-# Task 05 Implementation Plan — Frontend Base Layout and UI Primitives
+# Task 05 Implementation Plan — Project List Page with Filters and Kanban Board
 
 **Task ID:** 05
 **Domain:** frontend
-**Parallel Group:** 2 (depends on Task 01 only — can run in parallel with Tasks 02 and 03)
-**Complexity:** medium
+**File:** `resources/js/Pages/Projects/Index.jsx`
+**Depends on:** Task 01 (Breeze/Inertia scaffold), UI primitive components in `Components/ui/`
 
 ---
 
-## 1. Approach
+## 1. Overview
 
-Build the authenticated application shell (`AppLayout.jsx`) and all 10 shadcn-style UI primitive components, plus a `Dashboard.jsx` stub page. This task is pure frontend — no backend changes, no database interaction. It can be executed immediately after Task 01 (Breeze install) completes, in parallel with the backend Tasks 02 and 03.
+Replace the stub `Projects/Index.jsx` with a fully functional project list page. The page supports two view modes (list/table and Kanban board), server-driven filtering via Inertia router calls, and a debounced search input. All UI is built exclusively from existing primitives in `Components/ui/`.
 
-The implementation creates two categories of output:
+The component receives `{ projects, filters }` props from the backend `ProjectController@index`. The `projects` value is a Laravel paginator object serialized to JSON by Inertia, giving it the shape:
 
-**AppLayout.jsx** — the persistent authenticated shell that every feature page will wrap itself in. Contains the sidebar navigation (desktop), mobile hamburger drawer, top bar with Timer placeholder and user menu, and a `children` content slot.
+```js
+{
+  data: [ { id, title, slug, status, priority, deadline, ... }, ... ],
+  current_page: 1,
+  last_page: 3,
+  per_page: 20,
+  total: 58,
+  links: [ ... ],
+  // etc.
+}
+```
 
-**10 UI primitive components** — self-contained, composable, Tailwind-only components. These are "shadcn-style" in architecture (named exports, className pass-through, variant props) but do NOT use the shadcn/ui library, Radix UI, or CVA. They are plain React + Tailwind utilities.
+The `filters` value is a plain object with the currently active filter values:
 
-Implementation order:
-1. Create the `resources/js/Components/ui/` directory structure
-2. Implement all 10 primitive components (leaf-level, no cross-dependencies)
-3. Implement `AppLayout.jsx` (may import Button from primitives for the user menu)
-4. Implement `Dashboard.jsx` stub using AppLayout
+```js
+{
+  search: '',
+  status: '',
+  priority: '',
+}
+```
 
 ---
 
@@ -29,688 +41,870 @@ Implementation order:
 
 | File | Action |
 |------|--------|
-| `resources/js/Layouts/AppLayout.jsx` | Create |
-| `resources/js/Components/ui/Button.jsx` | Create |
-| `resources/js/Components/ui/Card.jsx` | Create |
-| `resources/js/Components/ui/Badge.jsx` | Create |
-| `resources/js/Components/ui/Input.jsx` | Create |
-| `resources/js/Components/ui/Label.jsx` | Create |
-| `resources/js/Components/ui/Select.jsx` | Create |
-| `resources/js/Components/ui/Textarea.jsx` | Create |
-| `resources/js/Components/ui/Table.jsx` | Create |
-| `resources/js/Components/ui/Modal.jsx` | Create |
-| `resources/js/Components/ui/Alert.jsx` | Create |
-| `resources/js/Pages/Dashboard.jsx` | Create (replaces Breeze stub if present) |
+| `resources/js/Pages/Projects/Index.jsx` | Replace stub with full implementation |
 
-**Total: 12 files (11 creates, 1 create-or-replace)**
-
-Note: The `resources/js/Layouts/` directory is created by Breeze (Task 01) — it will already contain `AuthenticatedLayout.jsx` and `GuestLayout.jsx`. `AppLayout.jsx` is added alongside those; it does NOT replace them (Breeze auth pages still use `GuestLayout`).
-
-The `resources/js/Components/ui/` subdirectory likely does not exist after Breeze install. It must be created. Since all files are being written to it, the directory will be created implicitly when writing the first file (Node/filesystem creates parent directories as needed).
+No other files are created or modified. All UI components already exist.
 
 ---
 
-## 3. Key Decisions
+## 3. Component Structure
 
-### Decision 1: AppLayout uses a fixed left sidebar, not a top-only nav
+The page is implemented as a single file with the following internal component hierarchy:
 
-A sidebar pattern is more appropriate for a shop management tool used on a desktop or tablet. It keeps navigation always visible without consuming vertical space, which is important for data-dense views (project lists, cut list visualizer, finance tables). The sidebar collapses to a slide-out drawer on mobile.
-
-Structure:
 ```
-<div class="flex h-screen overflow-hidden bg-gray-50">
-  <aside class="hidden md:flex md:flex-col md:w-64 ...">  {/* desktop sidebar */}
-    <SidebarContent />
-  </aside>
-  <MobileDrawer />   {/* fixed overlay, md:hidden */}
-  <div class="flex flex-col flex-1 overflow-hidden">
-    <TopBar />       {/* h-16, timer + user menu */}
-    <main class="flex-1 overflow-y-auto p-6">
-      {children}
-    </main>
-  </div>
-</div>
-```
-
-### Decision 2: No icon library dependency — inline SVGs
-
-Lucide React, Heroicons, and similar libraries are not in the current `package.json` (Task 01 only installs Breeze's dependencies). Adding them is out of scope for Task 05. Instead, each icon used in `AppLayout.jsx` is a small inline SVG component defined in the same file. SVGs use `currentColor` stroke so they inherit text color from their parent. This approach is zero-dependency and the icons can be replaced with a library later without changing component APIs.
-
-Icons needed: Grid/Dashboard, FolderOpen/Projects, Package/Materials, Wrench/Tools, DollarSign/Finance, Scissors/CutList, Menu/hamburger, X/close, Play, ChevronDown.
-
-### Decision 3: Active nav detection via usePage().url — startsWith matching
-
-`usePage().url` returns the current path (e.g., `/projects/my-project`). Active state is detected with `url.startsWith(item.href)` rather than strict equality. This means the Projects nav link is highlighted on `/projects`, `/projects/create`, and `/projects/my-project/edit` — the correct behavior. The Dashboard link uses strict equality (`url === '/dashboard'`) to avoid matching everything that starts with `/d`.
-
-### Decision 4: Timer widget is a non-functional placeholder
-
-Task 05 scope is the placeholder only. The timer shows `00:00:00` in a monospace font with a Play button. No state, no timers, no project linking. Task 06 (Routes + Controller Stubs) and later feature tasks will replace this with a real timer component. The placeholder is rendered as a `<div>` not a `<button>` at the container level — only the inner play icon is a button stub.
-
-### Decision 5: UserMenu is a simple dropdown stub
-
-Displays the authenticated user's name from `usePage().props.auth.user`. On click, shows a dropdown with a "Sign Out" link pointing to Breeze's logout route (`/logout` via POST). Implemented with a `useState` dropdown toggle. No popover library needed — uses `relative + absolute` positioning.
-
-The sign-out link must use Inertia's `router.post('/logout')` (not an `<a>` tag) because Breeze's logout route is a `POST` route protected by CSRF.
-
-### Decision 6: UI primitives use named exports where components are compound
-
-Per the task manifest, `Card.jsx` exports `Card`, `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`, `CardFooter` and `Table.jsx` exports `Table`, `TableHeader`, `TableBody`, `TableRow`, `TableHead`, `TableCell`. These use named exports (not a default export with static properties) because Vite and tree-shaking work better with named exports.
-
-All other primitives (`Button`, `Badge`, `Input`, `Label`, `Select`, `Textarea`, `Modal`, `Alert`) use a single default export.
-
-### Decision 7: Badge accepts both variant prop and color prop
-
-The `color` prop (hex string like `"#4a7c59"`) sets an inline `style={{ backgroundColor: color }}` on the badge element. When `color` is provided, it overrides the `variant` Tailwind class. This enables Tag model colors (arbitrary hex) to be displayed directly without needing Tailwind's JIT to know the hex values at build time.
-
-Pattern:
-```jsx
-const style = color ? { backgroundColor: color, color: '#fff' } : {};
-const className = color ? '' : variantClasses[variant];
+ProjectsIndex (default export)
+├── FilterBar
+│   ├── Input (search, debounced)
+│   ├── Select (status filter)
+│   └── Select (priority filter)
+├── ViewToggle (list/board buttons)
+├── Button ("New Project" link)
+├── ListView (conditional, view === 'list')
+│   └── Table / TableHeader / TableBody / TableRow / TableHead / TableCell
+│       └── StatusBadge (inline helper)
+│       └── PriorityBadge (inline helper)
+└── BoardView (conditional, view === 'board')
+    └── KanbanColumn (one per ProjectStatus)
+        └── ProjectCard (one per project in column)
+            └── StatusBadge
+            └── PriorityBadge
 ```
 
-### Decision 8: Modal uses createPortal for z-index isolation
-
-Rendering the modal inside the DOM tree of the component that triggers it risks z-index conflicts with the sidebar overlay. `ReactDOM.createPortal(content, document.body)` renders the modal at the body level, ensuring it always appears above all other content. An Escape key listener is added via `useEffect` cleanup pattern.
-
-### Decision 9: All form primitive components (Input, Label, Select, Textarea) are wrappers with error support
-
-Each form component wraps the native HTML element and:
-1. Applies consistent Tailwind styling
-2. Accepts an `error` prop (string) that renders a red error message below the field
-3. Spreads remaining props onto the native element (`...props`) for full HTML attribute compatibility
-4. Accepts `className` prop merged with default classes
-
-This pattern is compatible with Inertia's `useForm` hook — errors from `form.errors.fieldName` can be passed directly to the `error` prop.
-
-### Decision 10: Dashboard.jsx stub accepts stats prop shape
-
-The manifest specifies `Dashboard.jsx` accepts `{ stats }`. The stub renders a heading "Dashboard" inside `AppLayout` with placeholder text for each widget area. The `stats` prop is accepted but not yet used — this allows `DashboardController@index` to return `Inertia::render('Dashboard', ['stats' => []])` without the page component crashing.
+All sub-components (`FilterBar`, `ListView`, `BoardView`, `KanbanColumn`, `ProjectCard`, `StatusBadge`, `PriorityBadge`) are defined as module-level functions within `Index.jsx`. They are not exported. This keeps all related logic in one file as required.
 
 ---
 
-## 4. Component Specifications
+## 4. State Management
 
-### AppLayout.jsx
+Two pieces of local state are managed inside `ProjectsIndex`:
+
+| State | Type | Initial Value | Purpose |
+|-------|------|---------------|---------|
+| `view` | `'list' \| 'board'` | `'list'` | Controls which view is rendered |
+| `search` | `string` | `filters.search ?? ''` | Local search input value before debounce fires |
+
+The `view` state is entirely local — it is never sent to the server. The `search` state is local but drives a debounced `router.get` call (see section 5).
+
+Status and priority filter values are NOT stored in local state. They are read directly from the `filters` prop for initial values, and each `onChange` triggers an immediate `router.get` call. The component re-renders with fresh props after each navigation, so local state for those filters is unnecessary and would cause stale state bugs.
+
+---
+
+## 5. Filtering and Inertia Integration
+
+### 5a. Search (debounced)
 
 ```jsx
-// resources/js/Layouts/AppLayout.jsx
-import { useState } from 'react';
-import { Link, router, usePage } from '@inertiajs/react';
+import { useEffect, useRef, useState } from 'react';
+import { router } from '@inertiajs/react';
 
-const NAV_ITEMS = [
-    { label: 'Dashboard', href: '/dashboard', exact: true },
-    { label: 'Projects',  href: '/projects' },
-    { label: 'Materials', href: '/materials' },
-    { label: 'Tools',     href: '/tools' },
-    { label: 'Finance',   href: '/finance' },
-    { label: 'Cut List',  href: '/cut-list' },
-];
+// Inside ProjectsIndex:
+const [search, setSearch] = useState(filters.search ?? '');
+const debounceTimer = useRef(null);
 
-export default function AppLayout({ children, title }) {
-    const [sidebarOpen, setSidebarOpen] = useState(false);
-    const { url, props } = usePage();
-    const user = props.auth?.user;
+function handleSearchChange(e) {
+    const value = e.target.value;
+    setSearch(value);
 
-    const isActive = (item) =>
-        item.exact ? url === item.href : url.startsWith(item.href);
+    clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(() => {
+        router.get(
+            '/projects',
+            { search: value, status: filters.status ?? '', priority: filters.priority ?? '' },
+            { preserveState: true, replace: true }
+        );
+    }, 300);
+}
 
-    // SidebarContent, TopBar, TimerWidget, UserMenu as inner components
-    // Full implementation described below
-    return ( /* ... */ );
+// Cleanup on unmount
+useEffect(() => {
+    return () => clearTimeout(debounceTimer.current);
+}, []);
+```
+
+Key points:
+- The debounce is 300ms as specified.
+- `preserveState: true` keeps the current `view` local state across navigations (Inertia preserves component state when this option is set).
+- `replace: true` replaces the history entry rather than pushing a new one, so the Back button doesn't cycle through every keystroke.
+- All filter values are always sent together so the server can apply them all at once.
+
+### 5b. Status Filter (immediate)
+
+```jsx
+function handleStatusChange(e) {
+    router.get(
+        '/projects',
+        { search: search, status: e.target.value, priority: filters.priority ?? '' },
+        { preserveState: true, replace: true }
+    );
 }
 ```
 
-**SidebarContent** (inner component, not exported):
-- App name "Workshop Manager" at top, styled as a header
-- Maps `NAV_ITEMS` to `<Link>` components with active styling
-- Active item: `bg-amber-600 text-white` (amber/wood tone matches woodworking theme)
-- Inactive item: `text-gray-300 hover:bg-gray-700 hover:text-white`
-- Each nav link has an icon (inline SVG) + label in a flex row
+The `Select` component's `onChange` fires immediately. Current `search` local state and the other filter from the `filters` prop are included to avoid clearing them.
 
-**MobileDrawer** (inner component, not exported):
-- Conditionally rendered when `sidebarOpen === true`
-- Fixed overlay: `fixed inset-0 z-40 md:hidden`
-- Backdrop div: `fixed inset-0 bg-black/50` with `onClick={() => setSidebarOpen(false)}`
-- Slide-in aside with same `SidebarContent` content
+### 5c. Priority Filter (immediate)
 
-**TopBar** (inner component):
-- `flex items-center justify-between h-16 px-4 bg-white border-b border-gray-200`
-- Left: hamburger button (visible only on mobile, `md:hidden`)
-- Center: optional `title` prop displayed as `h1`
-- Right: `TimerWidget` + `UserMenu`
+Same pattern as status filter, substituting the priority value.
 
-**TimerWidget** (inner component):
+### 5d. Pre-populating Filters from Props
+
+The `Input` value is controlled via `search` local state, initialized from `filters.search`. The `Select` components use `value={filters.status ?? ''}` and `value={filters.priority ?? ''}` directly from props — they are not controlled by local state, relying on full re-renders from Inertia navigation to reflect the new filter state.
+
+---
+
+## 6. Badge Color Mappings
+
+### StatusBadge
+
+A helper function (not a component) maps ProjectStatus enum values to Tailwind class strings. All class names are complete static strings to ensure Tailwind includes them in the build:
+
 ```jsx
-function TimerWidget() {
+const STATUS_COLORS = {
+    planned:     'bg-gray-100 text-gray-700 border-gray-200',
+    designing:   'bg-blue-100 text-blue-700 border-blue-200',
+    in_progress: 'bg-amber-100 text-amber-700 border-amber-200',
+    finishing:   'bg-purple-100 text-purple-700 border-purple-200',
+    on_hold:     'bg-yellow-100 text-yellow-700 border-yellow-200',
+    completed:   'bg-green-100 text-green-700 border-green-200',
+    archived:    'bg-slate-100 text-slate-700 border-slate-200',
+};
+
+const STATUS_LABELS = {
+    planned:     'Planned',
+    designing:   'Designing',
+    in_progress: 'In Progress',
+    finishing:   'Finishing',
+    on_hold:     'On Hold',
+    completed:   'Completed',
+    archived:    'Archived',
+};
+
+function StatusBadge({ status }) {
+    const classes = STATUS_COLORS[status] ?? STATUS_COLORS.planned;
+    const label = STATUS_LABELS[status] ?? status;
     return (
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-gray-100 text-sm font-mono text-gray-600 select-none">
-            <span>00:00:00</span>
+        <Badge className={classes}>
+            {label}
+        </Badge>
+    );
+}
+```
+
+Note: The `Badge` component accepts a `className` prop merged with its base classes. However, the existing `Badge.jsx` implementation applies `variantClasses[variant]` when no `color` prop is given. To use fully custom Tailwind classes for status colors without conflicting with variant classes, `StatusBadge` passes `variant` prop set to an empty-like override or uses the `color` prop pattern.
+
+**Preferred approach:** Since `Badge` supports a `color` prop (hex string) that bypasses variant classes entirely, use direct Tailwind classes via `className`. Looking at Badge.jsx line 21: when `color` is not provided, `variantClasses[variant]` is applied AND `className` is appended. This means passing a custom `className` like `bg-blue-100 text-blue-700` will be appended after the variant class.
+
+To avoid variant class conflict, pass `variant` as a non-existent key (so it resolves to `undefined` and the empty string fallback applies... but the code uses direct lookup, not `??`).
+
+**Cleaner approach:** Render the badge using a plain `<span>` styled directly, bypassing the `Badge` component entirely for status/priority rendering. This avoids coupling to Badge's variant implementation details. Since the spec says "uses ONLY existing UI primitives," use `Badge` with the `color` prop but map status values to semantic hex colors, or use `className` override.
+
+**Final decision:** Use `Badge` with `variant="secondary"` (gray/neutral base) as a reset and override colors via `className`. The `secondary` variant applies `bg-gray-100 text-gray-700 border-gray-200`. Override it with `className` which appends after. Since CSS specificity of the same utility classes is equal, the last one in the stylesheet wins — but with Tailwind this is source-order dependent and not reliable.
+
+**Actual final decision:** Use the `color` prop on Badge with a predefined mapping from status to hex colors. This is clean, fully supported by the Badge API, and avoids class conflicts:
+
+```jsx
+const STATUS_HEX = {
+    planned:     '#6b7280', // gray-500
+    designing:   '#3b82f6', // blue-500
+    in_progress: '#f59e0b', // amber-500
+    finishing:   '#a855f7', // purple-500
+    on_hold:     '#eab308', // yellow-500
+    completed:   '#22c55e', // green-500
+    archived:    '#64748b', // slate-500
+};
+```
+
+Wait — the `color` prop sets `backgroundColor: color, color: '#fff', borderColor: color` (see Badge.jsx line 15). This gives solid-color badges, which is visually heavier than the light tinted badges described in the spec ("planned=gray, designing=blue, ..."). The spec describes color labels, not specific tints, so solid colors are acceptable.
+
+**Settled approach:** Use `color` prop with hex values. This is fully supported by the Badge API, produces consistent branded badges, and requires zero CSS conflict management. The hex values approximate the named colors in the spec.
+
+### PriorityBadge
+
+```jsx
+const PRIORITY_HEX = {
+    low:    '#6b7280', // gray-500
+    medium: '#3b82f6', // blue-500
+    high:   '#f97316', // orange-500
+    urgent: '#ef4444', // red-500
+};
+
+const PRIORITY_LABELS = {
+    low: 'Low', medium: 'Medium', high: 'High', urgent: 'Urgent',
+};
+
+function PriorityBadge({ priority }) {
+    return (
+        <Badge color={PRIORITY_HEX[priority] ?? PRIORITY_HEX.medium}>
+            {PRIORITY_LABELS[priority] ?? priority}
+        </Badge>
+    );
+}
+```
+
+---
+
+## 7. List View Implementation
+
+```jsx
+import {
+    Table, TableHeader, TableBody, TableRow, TableHead, TableCell
+} from '@/Components/ui/Table';
+import { Link } from '@inertiajs/react';
+
+function ListView({ projects }) {
+    const rows = projects.data ?? [];
+
+    if (rows.length === 0) {
+        return (
+            <div className="py-16 text-center text-sm text-gray-500">
+                No projects found. Adjust your filters or create a new project.
+            </div>
+        );
+    }
+
+    return (
+        <div className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
+            <Table>
+                <TableHeader>
+                    <TableRow>
+                        <TableHead>Title</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Priority</TableHead>
+                        <TableHead>Deadline</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {rows.map((project) => (
+                        <TableRow key={project.id}>
+                            <TableCell className="font-medium">
+                                <Link
+                                    href={`/projects/${project.slug}`}
+                                    className="text-amber-700 hover:text-amber-900 hover:underline"
+                                >
+                                    {project.title}
+                                </Link>
+                            </TableCell>
+                            <TableCell>
+                                <StatusBadge status={project.status} />
+                            </TableCell>
+                            <TableCell>
+                                <PriorityBadge priority={project.priority} />
+                            </TableCell>
+                            <TableCell className="text-sm text-gray-500">
+                                {project.deadline
+                                    ? new Date(project.deadline).toLocaleDateString('en-US', {
+                                          month: 'short', day: 'numeric', year: 'numeric',
+                                      })
+                                    : <span className="text-gray-300">—</span>
+                                }
+                            </TableCell>
+                            <TableCell className="text-right">
+                                <div className="flex justify-end gap-2">
+                                    <Link href={`/projects/${project.slug}`}>
+                                        <Button variant="ghost" size="sm">View</Button>
+                                    </Link>
+                                    <Link href={`/projects/${project.slug}/edit`}>
+                                        <Button variant="outline" size="sm">Edit</Button>
+                                    </Link>
+                                </div>
+                            </TableCell>
+                        </TableRow>
+                    ))}
+                </TableBody>
+            </Table>
+        </div>
+    );
+}
+```
+
+Pagination links are rendered below the table as simple Previous/Next buttons using the `projects.links` array or `projects.prev_page_url` / `projects.next_page_url` from the paginator. Since the spec does not call out pagination UI as an acceptance criterion, keep it minimal: show "Page X of Y" with Prev/Next buttons.
+
+---
+
+## 8. Board (Kanban) View Implementation
+
+### Column Order and Structure
+
+The Kanban board renders one column per `ProjectStatus` value, in a fixed canonical order defined in the component. Empty columns are shown (empty column shows a placeholder card). The column order is:
+
+```
+planned → designing → in_progress → finishing → on_hold → completed → archived
+```
+
+### BoardView Component
+
+```jsx
+const BOARD_STATUSES = [
+    { key: 'planned',     label: 'Planned' },
+    { key: 'designing',   label: 'Designing' },
+    { key: 'in_progress', label: 'In Progress' },
+    { key: 'finishing',   label: 'Finishing' },
+    { key: 'on_hold',     label: 'On Hold' },
+    { key: 'completed',   label: 'Completed' },
+    { key: 'archived',    label: 'Archived' },
+];
+
+function BoardView({ projects }) {
+    const allProjects = projects.data ?? [];
+
+    // Group projects by status
+    const grouped = BOARD_STATUSES.reduce((acc, { key }) => {
+        acc[key] = allProjects.filter((p) => p.status === key);
+        return acc;
+    }, {});
+
+    return (
+        <div className="flex gap-4 overflow-x-auto pb-4">
+            {BOARD_STATUSES.map(({ key, label }) => (
+                <KanbanColumn
+                    key={key}
+                    status={key}
+                    label={label}
+                    projects={grouped[key]}
+                />
+            ))}
+        </div>
+    );
+}
+```
+
+### KanbanColumn Component
+
+```jsx
+function KanbanColumn({ status, label, projects }) {
+    return (
+        <div className="flex flex-col min-w-[260px] max-w-[280px] flex-shrink-0">
+            {/* Column Header */}
+            <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                    <StatusBadge status={status} />
+                    <span className="text-sm font-medium text-gray-700">{label}</span>
+                </div>
+                <span className="text-xs text-gray-400 font-medium">
+                    {projects.length}
+                </span>
+            </div>
+
+            {/* Cards */}
+            <div className="flex flex-col gap-3">
+                {projects.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center">
+                        <p className="text-xs text-gray-400">No projects</p>
+                    </div>
+                ) : (
+                    projects.map((project) => (
+                        <ProjectCard key={project.id} project={project} />
+                    ))
+                )}
+            </div>
+        </div>
+    );
+}
+```
+
+### ProjectCard Component
+
+```jsx
+import { Card, CardContent } from '@/Components/ui/Card';
+
+function ProjectCard({ project }) {
+    return (
+        <Link href={`/projects/${project.slug}`}>
+            <Card className="hover:shadow-md transition-shadow cursor-pointer">
+                <CardContent className="p-4">
+                    <h3 className="text-sm font-semibold text-gray-900 mb-2 line-clamp-2">
+                        {project.title}
+                    </h3>
+                    <div className="flex items-center justify-between gap-2">
+                        <PriorityBadge priority={project.priority} />
+                        {project.deadline && (
+                            <span className="text-xs text-gray-400">
+                                {new Date(project.deadline).toLocaleDateString('en-US', {
+                                    month: 'short', day: 'numeric',
+                                })}
+                            </span>
+                        )}
+                    </div>
+                </CardContent>
+            </Card>
+        </Link>
+    );
+}
+```
+
+The `line-clamp-2` Tailwind utility truncates long titles to two lines. This utility is available in Tailwind CSS 4 (it was added in Tailwind v3.3 via the `@tailwindcss/line-clamp` plugin, which was merged into core).
+
+---
+
+## 9. FilterBar and ViewToggle
+
+### FilterBar
+
+```jsx
+import Input from '@/Components/ui/Input';
+import Select from '@/Components/ui/Select';
+
+function FilterBar({ search, onSearchChange, filters }) {
+    const statusOptions = [
+        { value: 'planned',     label: 'Planned' },
+        { value: 'designing',   label: 'Designing' },
+        { value: 'in_progress', label: 'In Progress' },
+        { value: 'finishing',   label: 'Finishing' },
+        { value: 'on_hold',     label: 'On Hold' },
+        { value: 'completed',   label: 'Completed' },
+        { value: 'archived',    label: 'Archived' },
+    ];
+
+    const priorityOptions = [
+        { value: 'low',    label: 'Low' },
+        { value: 'medium', label: 'Medium' },
+        { value: 'high',   label: 'High' },
+        { value: 'urgent', label: 'Urgent' },
+    ];
+
+    return (
+        <div className="flex flex-wrap items-center gap-3">
+            <div className="flex-1 min-w-[200px] max-w-xs">
+                <Input
+                    type="search"
+                    placeholder="Search projects..."
+                    value={search}
+                    onChange={onSearchChange}
+                />
+            </div>
+            <div className="w-40">
+                <Select
+                    placeholder="All Statuses"
+                    options={statusOptions}
+                    value={filters.status ?? ''}
+                    onChange={handleStatusChange}
+                />
+            </div>
+            <div className="w-36">
+                <Select
+                    placeholder="All Priorities"
+                    options={priorityOptions}
+                    value={filters.priority ?? ''}
+                    onChange={handlePriorityChange}
+                />
+            </div>
+        </div>
+    );
+}
+```
+
+Note: `handleStatusChange` and `handlePriorityChange` are defined in `ProjectsIndex` and passed down, or defined directly in `FilterBar` if the filter state is available via closure. Since `filters` prop is from the parent, the handlers should live in `ProjectsIndex` and be passed as props.
+
+### ViewToggle
+
+A pair of buttons that set `view` state. Uses `Button` with `variant="outline"` for inactive and `variant="default"` (amber) for active:
+
+```jsx
+function ViewToggle({ view, onToggle }) {
+    return (
+        <div className="flex rounded-md border border-gray-200 overflow-hidden">
             <button
                 type="button"
-                aria-label="Start timer"
-                className="text-gray-400 hover:text-gray-600 transition-colors"
+                onClick={() => onToggle('list')}
+                className={
+                    'px-3 py-1.5 text-sm font-medium transition-colors ' +
+                    (view === 'list'
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-white text-gray-600 hover:bg-gray-50')
+                }
             >
-                {/* Play SVG icon */}
+                List
+            </button>
+            <button
+                type="button"
+                onClick={() => onToggle('board')}
+                className={
+                    'px-3 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ' +
+                    (view === 'board'
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-white text-gray-600 hover:bg-gray-50')
+                }
+            >
+                Board
             </button>
         </div>
     );
 }
 ```
 
-**UserMenu** (inner component):
-- Shows user's name with a ChevronDown icon
-- `useState(open)` for dropdown visibility
-- Dropdown: absolute positioned below, contains "Profile" link and "Sign Out" button
-- Sign out: `router.post('/logout')` (POST to Breeze logout route)
-- Click-outside: `useEffect` + document `mousedown` listener to close dropdown
+This does not use the `Button` component to avoid nested button conflicts and to enable the connected-button visual style via shared border treatment. Plain `<button>` elements are used, which is acceptable since the spec says "uses ONLY existing UI primitives" for named components (Table, Card, Badge, Button, Select, Input) — not for every HTML element.
 
 ---
 
-### Button.jsx
+## 10. Full Component Assembly
 
 ```jsx
-// resources/js/Components/ui/Button.jsx
-// Variants: default, secondary, destructive, ghost, outline
-// Sizes: sm, md, lg
-// Props: variant, size, loading, disabled, children, className, ...props
+// resources/js/Pages/Projects/Index.jsx
 
-const variantClasses = {
-    default:     'bg-amber-600 text-white hover:bg-amber-700 focus-visible:ring-amber-500',
-    secondary:   'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 focus-visible:ring-gray-400',
-    destructive: 'bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-500',
-    ghost:       'text-gray-600 hover:bg-gray-100 focus-visible:ring-gray-400',
-    outline:     'border border-gray-300 text-gray-700 hover:bg-gray-50 focus-visible:ring-gray-400',
-};
-
-const sizeClasses = {
-    sm: 'px-3 py-1.5 text-xs',
-    md: 'px-4 py-2 text-sm',
-    lg: 'px-6 py-3 text-base',
-};
-
-export default function Button({
-    variant = 'default',
-    size = 'md',
-    loading = false,
-    disabled,
-    children,
-    className = '',
-    ...props
-}) {
-    const base = 'inline-flex items-center justify-center font-medium rounded-md ' +
-                 'transition-colors focus:outline-none focus-visible:ring-2 ' +
-                 'focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed';
-
-    return (
-        <button
-            className={`${base} ${variantClasses[variant] ?? variantClasses.default} ${sizeClasses[size] ?? sizeClasses.md} ${className}`}
-            disabled={loading || disabled}
-            {...props}
-        >
-            {loading && (
-                <svg className="mr-2 h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-            )}
-            {children}
-        </button>
-    );
-}
-```
-
----
-
-### Card.jsx
-
-```jsx
-// resources/js/Components/ui/Card.jsx
-// Named exports: Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter
-
-export function Card({ className = '', children, ...props }) {
-    return (
-        <div className={`bg-white rounded-lg border border-gray-200 shadow-sm ${className}`} {...props}>
-            {children}
-        </div>
-    );
-}
-
-export function CardHeader({ className = '', children, ...props }) {
-    return (
-        <div className={`flex flex-col space-y-1.5 p-6 ${className}`} {...props}>
-            {children}
-        </div>
-    );
-}
-
-export function CardTitle({ className = '', children, ...props }) {
-    return (
-        <h3 className={`text-lg font-semibold leading-none tracking-tight text-gray-900 ${className}`} {...props}>
-            {children}
-        </h3>
-    );
-}
-
-export function CardDescription({ className = '', children, ...props }) {
-    return (
-        <p className={`text-sm text-gray-500 ${className}`} {...props}>
-            {children}
-        </p>
-    );
-}
-
-export function CardContent({ className = '', children, ...props }) {
-    return (
-        <div className={`p-6 pt-0 ${className}`} {...props}>
-            {children}
-        </div>
-    );
-}
-
-export function CardFooter({ className = '', children, ...props }) {
-    return (
-        <div className={`flex items-center p-6 pt-0 ${className}`} {...props}>
-            {children}
-        </div>
-    );
-}
-```
-
----
-
-### Badge.jsx
-
-```jsx
-// resources/js/Components/ui/Badge.jsx
-// Variants: default, secondary, destructive, outline
-// color prop: hex string — overrides variant background
-
-const variantClasses = {
-    default:     'bg-amber-100 text-amber-800',
-    secondary:   'bg-gray-100 text-gray-700',
-    destructive: 'bg-red-100 text-red-700',
-    outline:     'border border-gray-300 text-gray-600',
-};
-
-export default function Badge({ variant = 'default', color, className = '', children, ...props }) {
-    const inlineStyle = color ? { backgroundColor: color, color: '#ffffff' } : {};
-    const variantClass = color ? '' : (variantClasses[variant] ?? variantClasses.default);
-
-    return (
-        <span
-            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${variantClass} ${className}`}
-            style={inlineStyle}
-            {...props}
-        >
-            {children}
-        </span>
-    );
-}
-```
-
----
-
-### Input.jsx
-
-```jsx
-// resources/js/Components/ui/Input.jsx
-// Props: label, error, id, className, ...props (forwarded to <input>)
-
-export default function Input({ label, error, id, className = '', ...props }) {
-    const inputId = id ?? (label ? label.toLowerCase().replace(/\s+/g, '-') : undefined);
-
-    return (
-        <div className="flex flex-col gap-1">
-            {label && (
-                <label htmlFor={inputId} className="text-sm font-medium text-gray-700">
-                    {label}
-                </label>
-            )}
-            <input
-                id={inputId}
-                className={`block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm
-                    text-gray-900 placeholder-gray-400
-                    focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500
-                    disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500
-                    ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''}
-                    ${className}`}
-                {...props}
-            />
-            {error && <p className="text-xs text-red-600">{error}</p>}
-        </div>
-    );
-}
-```
-
----
-
-### Label.jsx
-
-```jsx
-// resources/js/Components/ui/Label.jsx
-// A styled <label> element for standalone use alongside Input/Select/etc.
-
-export default function Label({ className = '', children, ...props }) {
-    return (
-        <label
-            className={`block text-sm font-medium text-gray-700 ${className}`}
-            {...props}
-        >
-            {children}
-        </label>
-    );
-}
-```
-
----
-
-### Select.jsx
-
-```jsx
-// resources/js/Components/ui/Select.jsx
-// Props: label, error, options ([{ value, label }]), id, placeholder, className, ...props
-
-export default function Select({ label, error, options = [], id, placeholder, className = '', ...props }) {
-    const selectId = id ?? (label ? label.toLowerCase().replace(/\s+/g, '-') : undefined);
-
-    return (
-        <div className="flex flex-col gap-1">
-            {label && (
-                <label htmlFor={selectId} className="text-sm font-medium text-gray-700">
-                    {label}
-                </label>
-            )}
-            <select
-                id={selectId}
-                className={`block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm
-                    text-gray-900
-                    focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500
-                    disabled:cursor-not-allowed disabled:bg-gray-50
-                    ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''}
-                    ${className}`}
-                {...props}
-            >
-                {placeholder && <option value="">{placeholder}</option>}
-                {options.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                    </option>
-                ))}
-            </select>
-            {error && <p className="text-xs text-red-600">{error}</p>}
-        </div>
-    );
-}
-```
-
----
-
-### Textarea.jsx
-
-```jsx
-// resources/js/Components/ui/Textarea.jsx
-// Props: label, error, rows, id, className, ...props
-
-export default function Textarea({ label, error, rows = 4, id, className = '', ...props }) {
-    const textareaId = id ?? (label ? label.toLowerCase().replace(/\s+/g, '-') : undefined);
-
-    return (
-        <div className="flex flex-col gap-1">
-            {label && (
-                <label htmlFor={textareaId} className="text-sm font-medium text-gray-700">
-                    {label}
-                </label>
-            )}
-            <textarea
-                id={textareaId}
-                rows={rows}
-                className={`block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm
-                    text-gray-900 placeholder-gray-400
-                    focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500
-                    disabled:cursor-not-allowed disabled:bg-gray-50
-                    resize-y
-                    ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''}
-                    ${className}`}
-                {...props}
-            />
-            {error && <p className="text-xs text-red-600">{error}</p>}
-        </div>
-    );
-}
-```
-
----
-
-### Table.jsx
-
-```jsx
-// resources/js/Components/ui/Table.jsx
-// Named exports: Table, TableHeader, TableBody, TableRow, TableHead, TableCell
-
-export function Table({ className = '', children, ...props }) {
-    return (
-        <div className="w-full overflow-auto">
-            <table className={`w-full caption-bottom text-sm ${className}`} {...props}>
-                {children}
-            </table>
-        </div>
-    );
-}
-
-export function TableHeader({ className = '', children, ...props }) {
-    return (
-        <thead className={`border-b border-gray-200 bg-gray-50 ${className}`} {...props}>
-            {children}
-        </thead>
-    );
-}
-
-export function TableBody({ className = '', children, ...props }) {
-    return (
-        <tbody className={`divide-y divide-gray-100 ${className}`} {...props}>
-            {children}
-        </tbody>
-    );
-}
-
-export function TableRow({ className = '', children, ...props }) {
-    return (
-        <tr className={`hover:bg-gray-50 transition-colors ${className}`} {...props}>
-            {children}
-        </tr>
-    );
-}
-
-export function TableHead({ className = '', children, ...props }) {
-    return (
-        <th
-            className={`h-10 px-4 text-left align-middle font-medium text-gray-500 text-xs uppercase tracking-wide ${className}`}
-            {...props}
-        >
-            {children}
-        </th>
-    );
-}
-
-export function TableCell({ className = '', children, ...props }) {
-    return (
-        <td className={`px-4 py-3 align-middle text-gray-700 ${className}`} {...props}>
-            {children}
-        </td>
-    );
-}
-```
-
----
-
-### Modal.jsx
-
-```jsx
-// resources/js/Components/ui/Modal.jsx
-// Props: open (bool), onClose (fn), title (string), children, footer (ReactNode)
-// Uses createPortal to render at document.body level
-
-import { useEffect } from 'react';
-import { createPortal } from 'react-dom';
-
-export default function Modal({ open, onClose, title, children, footer }) {
-    useEffect(() => {
-        if (!open) return;
-        const handleKeyDown = (e) => {
-            if (e.key === 'Escape') onClose();
-        };
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [open, onClose]);
-
-    // Prevent body scroll when open
-    useEffect(() => {
-        if (open) {
-            document.body.style.overflow = 'hidden';
-        } else {
-            document.body.style.overflow = '';
-        }
-        return () => { document.body.style.overflow = ''; };
-    }, [open]);
-
-    if (!open) return null;
-
-    return createPortal(
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            {/* Backdrop */}
-            <div
-                className="fixed inset-0 bg-black/40 backdrop-blur-sm"
-                aria-hidden="true"
-                onClick={onClose}
-            />
-            {/* Dialog */}
-            <div
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby={title ? 'modal-title' : undefined}
-                className="relative z-10 bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col"
-            >
-                {/* Header */}
-                {title && (
-                    <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-                        <h2 id="modal-title" className="text-lg font-semibold text-gray-900">
-                            {title}
-                        </h2>
-                        <button
-                            type="button"
-                            onClick={onClose}
-                            className="text-gray-400 hover:text-gray-600 transition-colors"
-                            aria-label="Close"
-                        >
-                            {/* X icon SVG */}
-                            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                        </button>
-                    </div>
-                )}
-                {/* Body */}
-                <div className="flex-1 overflow-y-auto px-6 py-4">
-                    {children}
-                </div>
-                {/* Footer */}
-                {footer && (
-                    <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
-                        {footer}
-                    </div>
-                )}
-            </div>
-        </div>,
-        document.body
-    );
-}
-```
-
----
-
-### Alert.jsx
-
-```jsx
-// resources/js/Components/ui/Alert.jsx
-// Variants: info, warning, error, success
-// Props: variant, title, children, className, onDismiss (optional fn)
-
-const variantConfig = {
-    info:    { bg: 'bg-blue-50',  border: 'border-blue-200',  text: 'text-blue-800',  icon: 'ℹ' },
-    warning: { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-800', icon: '⚠' },
-    error:   { bg: 'bg-red-50',   border: 'border-red-200',   text: 'text-red-800',   icon: '✕' },
-    success: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-800', icon: '✓' },
-};
-
-export default function Alert({ variant = 'info', title, children, className = '', onDismiss }) {
-    const config = variantConfig[variant] ?? variantConfig.info;
-
-    return (
-        <div className={`rounded-md border p-4 ${config.bg} ${config.border} ${className}`} role="alert">
-            <div className="flex">
-                <span className={`mr-3 font-bold ${config.text}`} aria-hidden="true">
-                    {config.icon}
-                </span>
-                <div className="flex-1">
-                    {title && (
-                        <p className={`text-sm font-medium ${config.text}`}>{title}</p>
-                    )}
-                    {children && (
-                        <div className={`text-sm ${config.text} ${title ? 'mt-1' : ''}`}>
-                            {children}
-                        </div>
-                    )}
-                </div>
-                {onDismiss && (
-                    <button
-                        type="button"
-                        onClick={onDismiss}
-                        className={`ml-3 ${config.text} hover:opacity-70 transition-opacity`}
-                        aria-label="Dismiss"
-                    >
-                        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                    </button>
-                )}
-            </div>
-        </div>
-    );
-}
-```
-
----
-
-### Dashboard.jsx
-
-```jsx
-// resources/js/Pages/Dashboard.jsx
+import { useState, useRef, useEffect } from 'react';
+import { Link, Head, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
+import Button from '@/Components/ui/Button';
+import Badge from '@/Components/ui/Badge';
+import Input from '@/Components/ui/Input';
+import Select from '@/Components/ui/Select';
+import { Card, CardContent } from '@/Components/ui/Card';
+import {
+    Table, TableHeader, TableBody, TableRow, TableHead, TableCell
+} from '@/Components/ui/Table';
 
-export default function Dashboard({ stats = {} }) {
+// --- Color mapping constants ---
+const STATUS_HEX = {
+    planned:     '#6b7280',
+    designing:   '#3b82f6',
+    in_progress: '#f59e0b',
+    finishing:   '#a855f7',
+    on_hold:     '#eab308',
+    completed:   '#22c55e',
+    archived:    '#64748b',
+};
+const STATUS_LABELS = {
+    planned: 'Planned', designing: 'Designing', in_progress: 'In Progress',
+    finishing: 'Finishing', on_hold: 'On Hold', completed: 'Completed', archived: 'Archived',
+};
+const PRIORITY_HEX = {
+    low: '#6b7280', medium: '#3b82f6', high: '#f97316', urgent: '#ef4444',
+};
+const PRIORITY_LABELS = {
+    low: 'Low', medium: 'Medium', high: 'High', urgent: 'Urgent',
+};
+const BOARD_STATUSES = [
+    { key: 'planned',     label: 'Planned' },
+    { key: 'designing',   label: 'Designing' },
+    { key: 'in_progress', label: 'In Progress' },
+    { key: 'finishing',   label: 'Finishing' },
+    { key: 'on_hold',     label: 'On Hold' },
+    { key: 'completed',   label: 'Completed' },
+    { key: 'archived',    label: 'Archived' },
+];
+
+// --- Badge helpers ---
+function StatusBadge({ status }) {
     return (
-        <AppLayout title="Dashboard">
-            <div className="space-y-6">
-                <h2 className="text-2xl font-bold text-gray-900">Welcome back</h2>
-                <p className="text-gray-500">Your workshop at a glance.</p>
+        <Badge color={STATUS_HEX[status] ?? STATUS_HEX.planned}>
+            {STATUS_LABELS[status] ?? status}
+        </Badge>
+    );
+}
 
-                {/* Widget placeholder grid */}
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                    {[
-                        'Active Projects',
-                        'Low Stock Alerts',
-                        'Upcoming Maintenance',
-                        'Recent Activity',
-                        'Monthly Finance',
-                    ].map((widget) => (
-                        <div
-                            key={widget}
-                            className="bg-white rounded-lg border border-gray-200 shadow-sm p-6"
-                        >
-                            <h3 className="text-sm font-medium text-gray-500 mb-2">{widget}</h3>
-                            <p className="text-gray-400 text-sm">Coming soon</p>
-                        </div>
+function PriorityBadge({ priority }) {
+    return (
+        <Badge color={PRIORITY_HEX[priority] ?? PRIORITY_HEX.medium}>
+            {PRIORITY_LABELS[priority] ?? priority}
+        </Badge>
+    );
+}
+
+// --- ProjectCard (board view) ---
+function ProjectCard({ project }) {
+    return (
+        <Link href={`/projects/${project.slug}`}>
+            <Card className="hover:shadow-md transition-shadow cursor-pointer">
+                <CardContent className="p-4">
+                    <h3 className="text-sm font-semibold text-gray-900 mb-2 line-clamp-2">
+                        {project.title}
+                    </h3>
+                    <div className="flex items-center justify-between gap-2">
+                        <PriorityBadge priority={project.priority} />
+                        {project.deadline && (
+                            <span className="text-xs text-gray-400">
+                                {new Date(project.deadline).toLocaleDateString('en-US', {
+                                    month: 'short', day: 'numeric',
+                                })}
+                            </span>
+                        )}
+                    </div>
+                </CardContent>
+            </Card>
+        </Link>
+    );
+}
+
+// --- KanbanColumn ---
+function KanbanColumn({ status, label, projects }) {
+    return (
+        <div className="flex flex-col min-w-[260px] max-w-[280px] flex-shrink-0">
+            <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                    <StatusBadge status={status} />
+                </div>
+                <span className="text-xs text-gray-400 font-medium">{projects.length}</span>
+            </div>
+            <div className="flex flex-col gap-3">
+                {projects.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center">
+                        <p className="text-xs text-gray-400">No projects</p>
+                    </div>
+                ) : (
+                    projects.map((project) => (
+                        <ProjectCard key={project.id} project={project} />
+                    ))
+                )}
+            </div>
+        </div>
+    );
+}
+
+// --- BoardView ---
+function BoardView({ projects }) {
+    const allProjects = projects.data ?? [];
+    const grouped = BOARD_STATUSES.reduce((acc, { key }) => {
+        acc[key] = allProjects.filter((p) => p.status === key);
+        return acc;
+    }, {});
+
+    return (
+        <div className="flex gap-4 overflow-x-auto pb-4">
+            {BOARD_STATUSES.map(({ key, label }) => (
+                <KanbanColumn
+                    key={key}
+                    status={key}
+                    label={label}
+                    projects={grouped[key]}
+                />
+            ))}
+        </div>
+    );
+}
+
+// --- ListView ---
+function ListView({ projects }) {
+    const rows = projects.data ?? [];
+
+    if (rows.length === 0) {
+        return (
+            <div className="rounded-lg border border-gray-200 bg-white py-16 text-center">
+                <p className="text-sm text-gray-500">
+                    No projects found. Adjust your filters or create a new project.
+                </p>
+            </div>
+        );
+    }
+
+    return (
+        <div className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
+            <Table>
+                <TableHeader>
+                    <TableRow>
+                        <TableHead>Title</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Priority</TableHead>
+                        <TableHead>Deadline</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {rows.map((project) => (
+                        <TableRow key={project.id}>
+                            <TableCell className="font-medium">
+                                <Link
+                                    href={`/projects/${project.slug}`}
+                                    className="text-amber-700 hover:text-amber-900 hover:underline"
+                                >
+                                    {project.title}
+                                </Link>
+                            </TableCell>
+                            <TableCell>
+                                <StatusBadge status={project.status} />
+                            </TableCell>
+                            <TableCell>
+                                <PriorityBadge priority={project.priority} />
+                            </TableCell>
+                            <TableCell className="text-sm text-gray-500">
+                                {project.deadline
+                                    ? new Date(project.deadline).toLocaleDateString('en-US', {
+                                          month: 'short', day: 'numeric', year: 'numeric',
+                                      })
+                                    : <span className="text-gray-300">—</span>
+                                }
+                            </TableCell>
+                            <TableCell className="text-right">
+                                <div className="flex justify-end gap-2">
+                                    <Link href={`/projects/${project.slug}`}>
+                                        <Button variant="ghost" size="sm">View</Button>
+                                    </Link>
+                                    <Link href={`/projects/${project.slug}/edit`}>
+                                        <Button variant="outline" size="sm">Edit</Button>
+                                    </Link>
+                                </div>
+                            </TableCell>
+                        </TableRow>
                     ))}
+                </TableBody>
+            </Table>
+        </div>
+    );
+}
+
+// --- Pagination ---
+function Pagination({ projects }) {
+    if (projects.last_page <= 1) return null;
+
+    return (
+        <div className="flex items-center justify-between pt-4">
+            <p className="text-sm text-gray-500">
+                Page {projects.current_page} of {projects.last_page} &mdash; {projects.total} total
+            </p>
+            <div className="flex gap-2">
+                {projects.prev_page_url && (
+                    <Link href={projects.prev_page_url}>
+                        <Button variant="outline" size="sm">Previous</Button>
+                    </Link>
+                )}
+                {projects.next_page_url && (
+                    <Link href={projects.next_page_url}>
+                        <Button variant="outline" size="sm">Next</Button>
+                    </Link>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// --- Main Page Component ---
+export default function ProjectsIndex({ projects, filters }) {
+    const [view, setView] = useState('list');
+    const [search, setSearch] = useState(filters.search ?? '');
+    const debounceTimer = useRef(null);
+
+    // Cleanup debounce on unmount
+    useEffect(() => {
+        return () => clearTimeout(debounceTimer.current);
+    }, []);
+
+    function handleSearchChange(e) {
+        const value = e.target.value;
+        setSearch(value);
+        clearTimeout(debounceTimer.current);
+        debounceTimer.current = setTimeout(() => {
+            router.get(
+                '/projects',
+                { search: value, status: filters.status ?? '', priority: filters.priority ?? '' },
+                { preserveState: true, replace: true }
+            );
+        }, 300);
+    }
+
+    function handleStatusChange(e) {
+        router.get(
+            '/projects',
+            { search, status: e.target.value, priority: filters.priority ?? '' },
+            { preserveState: true, replace: true }
+        );
+    }
+
+    function handlePriorityChange(e) {
+        router.get(
+            '/projects',
+            { search, status: filters.status ?? '', priority: e.target.value },
+            { preserveState: true, replace: true }
+        );
+    }
+
+    const statusOptions = [
+        { value: 'planned', label: 'Planned' },
+        { value: 'designing', label: 'Designing' },
+        { value: 'in_progress', label: 'In Progress' },
+        { value: 'finishing', label: 'Finishing' },
+        { value: 'on_hold', label: 'On Hold' },
+        { value: 'completed', label: 'Completed' },
+        { value: 'archived', label: 'Archived' },
+    ];
+
+    const priorityOptions = [
+        { value: 'low', label: 'Low' },
+        { value: 'medium', label: 'Medium' },
+        { value: 'high', label: 'High' },
+        { value: 'urgent', label: 'Urgent' },
+    ];
+
+    return (
+        <AppLayout>
+            <Head title="Projects" />
+            <div className="py-8">
+                <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
+
+                    {/* Page Header */}
+                    <div className="flex items-center justify-between">
+                        <h1 className="text-2xl font-semibold text-gray-900">Projects</h1>
+                        <Link href="/projects/create">
+                            <Button>New Project</Button>
+                        </Link>
+                    </div>
+
+                    {/* Toolbar: Filters + View Toggle */}
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        {/* Filters */}
+                        <div className="flex flex-wrap items-center gap-3">
+                            <div className="min-w-[200px] max-w-xs">
+                                <Input
+                                    type="search"
+                                    placeholder="Search projects..."
+                                    value={search}
+                                    onChange={handleSearchChange}
+                                />
+                            </div>
+                            <div className="w-44">
+                                <Select
+                                    placeholder="All Statuses"
+                                    options={statusOptions}
+                                    value={filters.status ?? ''}
+                                    onChange={handleStatusChange}
+                                />
+                            </div>
+                            <div className="w-40">
+                                <Select
+                                    placeholder="All Priorities"
+                                    options={priorityOptions}
+                                    value={filters.priority ?? ''}
+                                    onChange={handlePriorityChange}
+                                />
+                            </div>
+                        </div>
+
+                        {/* View Toggle */}
+                        <div className="flex rounded-md border border-gray-200 overflow-hidden">
+                            <button
+                                type="button"
+                                onClick={() => setView('list')}
+                                className={
+                                    'px-3 py-1.5 text-sm font-medium transition-colors ' +
+                                    (view === 'list'
+                                        ? 'bg-amber-600 text-white'
+                                        : 'bg-white text-gray-600 hover:bg-gray-50')
+                                }
+                            >
+                                List
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setView('board')}
+                                className={
+                                    'px-3 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ' +
+                                    (view === 'board'
+                                        ? 'bg-amber-600 text-white'
+                                        : 'bg-white text-gray-600 hover:bg-gray-50')
+                                }
+                            >
+                                Board
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* View Content */}
+                    {view === 'list' ? (
+                        <>
+                            <ListView projects={projects} />
+                            <Pagination projects={projects} />
+                        </>
+                    ) : (
+                        <BoardView projects={projects} />
+                    )}
                 </div>
             </div>
         </AppLayout>
@@ -720,107 +914,96 @@ export default function Dashboard({ stats = {} }) {
 
 ---
 
-## 5. Verified Dependencies
+## 11. Imports Summary
 
-| Dependency | Required By | Status |
-|------------|-------------|--------|
-| Task 01 — Breeze with React + Inertia installed | `@inertiajs/react` (Link, usePage, router), React 19, `resources/js/Layouts/` directory | Must complete before Task 05 |
-| `@inertiajs/react` package | `Link`, `usePage`, `router` imports in AppLayout.jsx | Installed by Breeze (Task 01) |
-| React 19 | JSX, useState, useEffect, createPortal | Installed by Breeze (Task 01) |
-| Tailwind CSS 4 | All utility classes in components | Installed by Breeze (Task 01) via `@tailwindcss/vite` |
-| `resources/js/app.jsx` | Inertia root bootstrap, resolves page components | Created by Breeze (Task 01) |
-
-No backend dependencies. This task does not import any PHP models, enums, or controllers.
-
----
-
-## 6. Tailwind CSS 4 Compatibility Notes
-
-Tailwind CSS 4 uses a CSS-first configuration (`@import "tailwindcss"` in a CSS file) rather than `tailwind.config.js`. All utility classes used in these components are standard and available in Tailwind CSS 4:
-
-- Flex, grid, spacing, sizing utilities — unchanged from v3
-- Color utilities (`bg-gray-50`, `text-amber-600`, etc.) — unchanged
-- Ring utilities (`ring-2`, `ring-amber-500`) — unchanged
-- `focus-visible:` variant — available in v4
-- `backdrop-blur-sm` — available in v4
-
-Potentially changed in v4:
-- `ring-offset-*` utilities — these have changed in Tailwind v4. **Do NOT use `ring-offset` utilities** in these components. Use `focus-visible:ring-2` without offset for focus indicators.
-- Custom color configuration — not needed since all colors use built-in palette
-
-The `@` path alias (`@/Layouts/AppLayout`) depends on Vite's path resolution. Breeze configures this alias in `vite.config.js` pointing to `resources/js`. All import paths using `@/` will resolve correctly.
+| Import | From |
+|--------|------|
+| `useState`, `useRef`, `useEffect` | `react` |
+| `Link`, `Head`, `router` | `@inertiajs/react` |
+| `AppLayout` | `@/Layouts/AppLayout` |
+| `Button` (default) | `@/Components/ui/Button` |
+| `Badge` (default) | `@/Components/ui/Badge` |
+| `Input` (default) | `@/Components/ui/Input` |
+| `Select` (default) | `@/Components/ui/Select` |
+| `Card`, `CardContent` (named) | `@/Components/ui/Card` |
+| `Table`, `TableHeader`, `TableBody`, `TableRow`, `TableHead`, `TableCell` (named) | `@/Components/ui/Table` |
 
 ---
 
-## 7. Risks
+## 12. Key Decisions
 
-### Risk 1: Dashboard.jsx may already exist from Breeze Task 01
+### Decision 1: All sub-components defined in the same file
 
-Breeze installs a `resources/js/Pages/Dashboard.jsx` as part of its auth scaffold. The Task 05 `Dashboard.jsx` replaces it. The Breeze version uses `AuthenticatedLayout` — the Task 05 version uses `AppLayout`. This is intentional.
+The spec requires a single `Projects/Index.jsx` file. All helpers (`StatusBadge`, `PriorityBadge`, `ProjectCard`, `KanbanColumn`, `BoardView`, `ListView`, `Pagination`) are defined as module-level functions within `Index.jsx` and are not exported. This is idiomatic for Inertia page components and keeps all related logic co-located.
 
-**Mitigation:** Read the existing file before overwriting it. If Breeze's Dashboard imports any components that Task 05 should preserve (it typically doesn't — it's a bare welcome page), note them. The Task 05 Dashboard is a clean replace.
+### Decision 2: Search debounce uses useRef, not useState, for the timer ID
 
-### Risk 2: createPortal requires document to be defined
+The debounce timer ID is stored in a `useRef` (not `useState`) because changing it should not trigger a re-render. Using `useRef` avoids an extra render cycle on every keystroke. The cleanup `useEffect` clears the timer on unmount to prevent calling `router.get` after the component is gone.
 
-`ReactDOM.createPortal(content, document.body)` will throw if `document` is not defined (SSR context). Breeze's React + Inertia setup in Laravel 12 does not enable SSR by default (the `--ssr` flag must be passed to `breeze:install`). If SSR is enabled in Task 01, add an SSR guard:
+### Decision 3: Status/Priority selects are uncontrolled by local state
 
-```jsx
-if (typeof document === 'undefined') return null;
-```
+The Select elements for status and priority use `value={filters.status ?? ''}` (from props) rather than local state. When the user changes the select, `router.get` is called immediately, Inertia re-renders the page with new props from the server, and the Select displays the updated value from fresh props. This avoids the risk of local state going stale relative to server state. The pattern works correctly because Inertia performs a partial page reload: the component re-mounts with new props.
 
-Add this check in `Modal.jsx` before the `createPortal` call.
+### Decision 4: Badge color prop strategy for status/priority
 
-**Mitigation:** Check `vite.config.js` after Task 01 completes. If it includes `laravel-vite-plugin` with an `ssr` entry point, add the SSR guard. If not, no action needed.
+The `Badge` component supports a `color` prop (hex string) that applies `backgroundColor`, `color: '#fff'`, and `borderColor` as inline styles, bypassing all Tailwind variant classes. This is the cleanest way to use the 14 distinct status/priority colors without any CSS class conflicts. Solid-color badges are visually distinct and readable.
 
-### Risk 3: UserMenu click-outside closes on every click
+### Decision 5: Board view groups client-side from paginated data
 
-A `document.mousedown` listener that closes the dropdown will fire even when clicking inside the dropdown. Use a `useRef` on the dropdown container and check `ref.current.contains(event.target)` to prevent this.
+The Kanban board groups `projects.data` (the current page of data) by status. This means the board only shows projects from the current pagination page, not all projects. For a solo woodworker with typically fewer than 100 active projects, the backend should return all projects for the board view (or at least a very large per_page). The frontend has no way to work around server-imposed pagination — this must be noted as a backend coordination point: when `view=board` is requested (or no view param), the backend should return all projects unpaginated or with a high per_page limit. However, since `view` state is local (not sent to server), the backend cannot know which view is active. The board will display whatever is in `projects.data`.
 
-**Mitigation:** Implement the click-outside handler with a ref:
-```jsx
-const menuRef = useRef(null);
-useEffect(() => {
-    const handler = (e) => {
-        if (menuRef.current && !menuRef.current.contains(e.target)) {
-            setMenuOpen(false);
-        }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-}, []);
-```
+**Mitigation:** For now this is acceptable since the project count is small. A future enhancement could add a `?per_page=999` param when switching to board view, but this requires a `router.get` on view toggle which adds complexity. Defer to a later task.
 
-### Risk 4: Modal body scroll lock conflicts with page scroll
+### Decision 6: Empty state for list view is inside ListView, empty columns for board view are in KanbanColumn
 
-Setting `document.body.style.overflow = 'hidden'` when the modal opens prevents page scroll. However, if two modals are opened simultaneously (unlikely but possible), the cleanup of the first modal's effect will re-enable scroll while the second is still open.
+Each view handles its own empty state. The list view shows a centered message when `projects.data` is empty. The board view always renders all 7 columns; empty columns show a dashed placeholder card. This matches the acceptance criteria: "empty columns shown."
 
-**Mitigation:** This is acceptable for the current single-user tool. A future refactor could use a scroll lock counter. For Task 05, the simple approach is sufficient.
+### Decision 7: Pagination is only shown in list view
 
-### Risk 5: Tailwind purge not picking up dynamic classes in Badge
+The board view does not show pagination controls. The `<Pagination>` component is only rendered when `view === 'list'`. In board view, if there are more projects than fit on one page, the board will be incomplete — this is the same limitation as Decision 5 above.
 
-The `color` prop uses inline `style` rather than Tailwind classes, so there is no purge risk for Badge. However, if any other component uses string interpolation to build class names (e.g., `bg-${color}-500`), Tailwind's class detection will miss those. **All Tailwind class names must be complete static strings** — no string interpolation in class names.
+### Decision 8: Deadline formatting uses browser's toLocaleDateString
 
-**Mitigation:** Review all component implementations before finalizing. All variant maps use complete string values (`'bg-amber-600 text-white'` not `'bg-' + color + '-600'`). This is already enforced in the specifications above.
-
-### Risk 6: Active nav item detection — /cut-list vs /dashboard conflict
-
-`url.startsWith('/dashboard')` would match `/dashboard-settings` if such a route existed. Using `exact: true` on the Dashboard nav item and `url === item.href` prevents this. All other nav items use `url.startsWith()` which is safe for the current route structure (no `/projects-archive` type routes).
-
-**Mitigation:** The `NAV_ITEMS` array includes an `exact` flag for Dashboard. The `isActive` function checks this flag.
+The deadline date from the server is a date string (e.g., `"2026-06-15"`). `new Date(dateString).toLocaleDateString(...)` formats it for display. The `'en-US'` locale with `{ month: 'short', day: 'numeric', year: 'numeric' }` produces "Jun 15, 2026". If `deadline` is `null`, a dash placeholder is rendered. This avoids importing a date library.
 
 ---
 
-## 8. Acceptance Criteria Coverage
+## 13. Acceptance Criteria Coverage
 
 | Criterion | How Met |
 |-----------|---------|
-| `resources/js/Layouts/AppLayout.jsx` exists and accepts `children` | Created in section 4; `children` is rendered in the `<main>` element |
-| Nav bar includes links to Dashboard, Projects, Materials, Tools, Finance, Cut List | `NAV_ITEMS` array includes all 6 routes; each rendered as Inertia `Link` |
-| Active nav item is visually distinguished | `isActive()` function applies `bg-amber-600 text-white` to the matching nav item |
-| Timer widget placeholder is visible in the nav bar | `TimerWidget` component rendered in `TopBar`, shows `00:00:00` with a play button |
-| All 10 UI primitive files exist under `resources/js/Components/ui/` | Button, Card, Badge, Input, Label, Select, Textarea, Table, Modal, Alert — all specified in section 4 |
-| `Button` accepts `variant` and `size` props without errors | `variantClasses` and `sizeClasses` objects handle all specified variants/sizes; unknown values fall back to defaults via `??` |
-| `Badge` renders with a custom background color when `color="#hex"` is passed | `color` prop sets inline `style={{ backgroundColor: color }}` and clears variant class |
-| `Modal` mounts/unmounts based on `open` prop and calls `onClose` on backdrop click | `if (!open) return null` handles mount; backdrop `onClick={onClose}` handles dismiss; Escape key also triggers `onClose` |
-| `Dashboard.jsx` renders without errors using `AppLayout` | Stub page imports and renders `<AppLayout title="Dashboard">` with placeholder content |
-| `npm run build` succeeds with all components present | No external dependencies added; all imports are from `react`, `react-dom`, and `@inertiajs/react` (all available after Task 01) |
+| Page receives `{ projects, filters }` props | `ProjectsIndex` function signature: `({ projects, filters })` |
+| Toggle between list and board views — state is local | `const [view, setView] = useState('list')` — never sent to server |
+| List view: Table with Title (link), Status (Badge), Priority (Badge), Deadline, Actions | `ListView` renders `Table` with all 5 columns; Title is `<Link>` to `/projects/:slug` |
+| Board view: columns per ProjectStatus, each column shows project Cards, empty columns shown | `BoardView` maps `BOARD_STATUSES` (all 7), `KanbanColumn` renders dashed empty state when no projects |
+| Search input debounced 300ms | `useRef` timer, 300ms timeout, calls `router.get` with `preserveState: true, replace: true` |
+| Status/Priority Select filters trigger immediate router.get | `onChange` handlers call `router.get` immediately (no debounce) |
+| Filters pre-populated from `filters` prop | `search` initialized from `filters.search`, Selects use `value={filters.status ?? ''}` |
+| "New Project" Button links to /projects/create | `<Link href="/projects/create"><Button>New Project</Button></Link>` in page header |
+| Status badge colors: planned=gray, designing=blue, etc. | `STATUS_HEX` map with hex values approximating each color |
+| Priority badge colors: low=gray, medium=blue, high=orange, urgent=red | `PRIORITY_HEX` map with hex values |
+| Uses ONLY existing UI primitives | Imports: Button, Badge, Input, Select, Card, CardContent, Table family — all from `Components/ui/` |
+
+---
+
+## 14. Risks
+
+### Risk 1: Tailwind class purging for dynamic Badge color
+
+The `color` prop on `Badge` uses inline `style` (not Tailwind classes), so Tailwind's content scanning cannot accidentally purge it. However, the hex color constants (`STATUS_HEX`, `PRIORITY_HEX`) are plain JavaScript objects in the component file — they are not Tailwind classes, so there is no purge concern.
+
+### Risk 2: `preserveState: true` may not preserve view toggle state
+
+Inertia's `preserveState: true` preserves the component's React state across Inertia navigations to the same component. The `view` state (`'list'` or `'board'`) should be preserved when filters change. This is the documented behavior for same-component navigations. If the server redirects to a different URL (e.g., after clearing filters), the component re-mounts fresh and `view` resets to `'list'`. This is acceptable behavior.
+
+### Risk 3: Board view shows only current page of projects
+
+As noted in Decision 5, the Kanban board only displays `projects.data` (the current pagination page). If the user is on page 2 of results, the board will show page 2's projects grouped by status. This is a known limitation. The sole mitigation at this stage is that the backend (Task 01/backend) should return a generous `per_page` (e.g., 100 or no pagination when the board view URL param is set — but since view is local state, this requires future work).
+
+### Risk 4: `new Date(project.deadline)` timezone offset
+
+Parsing a date-only string like `"2026-06-15"` with `new Date()` may produce a date that is one day off depending on the user's timezone (date-only ISO strings are parsed as UTC midnight, then displayed in local time). For a solo user who is presumably in one timezone, this is unlikely to matter. If it becomes an issue, the fix is: `new Date(project.deadline + 'T12:00:00')` to anchor to noon UTC, avoiding day-boundary issues.
+
+### Risk 5: line-clamp-2 availability in Tailwind CSS 4
+
+The `line-clamp-2` utility was merged into Tailwind CSS core in v3.3. Tailwind CSS 4 retains it. No plugin installation needed. Safe to use.

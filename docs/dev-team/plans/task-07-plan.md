@@ -1,440 +1,639 @@
-# Task 07 Plan: Form Request Stubs with Validation Rules
+# Task 07 Plan: Project Detail Page (Fullstack)
 
-## 1. Approach
+## 1. Overview
 
-Create 15 Form Request classes under `app/Http/Requests/` and one smoke-test file under `tests/Unit/`. Every Form Request extends `Illuminate\Foundation\Http\FormRequest`, implements `authorize(): bool` returning `true` (single-user app, policy enforcement is not needed at this scaffold stage), and implements `rules(): array` with full, schema-accurate validation rules.
+Build the full `Projects/Show.jsx` page and update `ProjectController::show()` with all required
+eager loads. The page is divided into eight visible sections rendered inside a single scrollable
+view: page header, overview, photos, notes, time log, materials, expenses, and revenues. Each
+sub-resource section contains a read table and an inline form that posts to an existing route.
 
-Rules use Laravel's `Rule` facade for enum validation (`Rule::enum()`) and foreign-key existence checks (`Rule::exists()`). The goal is a complete rules layer so that future feature implementations can wire these requests directly into controllers with no validation rework.
+No new routes or models are introduced by this task. All backend sub-resource POST routes are
+already registered in `routes/web.php` by prior tasks. `ProjectController` action stubs for
+`uploadPhoto`, `logTime`, `attachMaterial`, and `addNote` are already present.
 
-Also create `tests/Unit/FormRequestTest.php` — a smoke test that instantiates each Form Request class and verifies the `rules()` method returns a non-empty array, confirming the classes are syntactically valid PHP.
+---
 
-## 2. Files to Create/Modify
+## 2. Files to Create or Modify
 
 | Action | Path |
 |--------|------|
-| Create | `app/Http/Requests/StoreProjectRequest.php` |
-| Create | `app/Http/Requests/UpdateProjectRequest.php` |
-| Create | `app/Http/Requests/StoreProjectPhotoRequest.php` |
-| Create | `app/Http/Requests/LogTimeRequest.php` |
-| Create | `app/Http/Requests/AttachMaterialRequest.php` |
-| Create | `app/Http/Requests/AddNoteRequest.php` |
-| Create | `app/Http/Requests/StoreMaterialRequest.php` |
-| Create | `app/Http/Requests/UpdateMaterialRequest.php` |
-| Create | `app/Http/Requests/AdjustStockRequest.php` |
-| Create | `app/Http/Requests/StoreToolRequest.php` |
-| Create | `app/Http/Requests/UpdateToolRequest.php` |
-| Create | `app/Http/Requests/LogMaintenanceRequest.php` |
-| Create | `app/Http/Requests/StoreExpenseRequest.php` |
-| Create | `app/Http/Requests/StoreRevenueRequest.php` |
-| Create | `app/Http/Requests/CutListRequest.php` |
-| Create | `tests/Unit/FormRequestTest.php` |
+| Modify | `app/Http/Controllers/ProjectController.php` — `show()` method only |
+| Modify | `resources/js/Pages/Projects/Show.jsx` — full replacement of stub |
 
-No controller files are modified by this task. The controllers created in Task 06 use `Illuminate\Http\Request` as stubs; swapping to typed Form Requests is done by the feature implementation tasks (Phase 2+).
+No new files are needed.
 
-## 3. Validation Rules per Request
+---
 
-### StoreProjectRequest
+## 3. Backend: `ProjectController::show()`
+
+### 3.1 Eager Loads
+
+The method must load all sub-resources in a single query batch to avoid N+1 problems.
+The ordering clauses are applied inside the `with()` closures.
 
 ```php
-use App\Enums\ProjectStatus;
-use App\Enums\ProjectPriority;
-use Illuminate\Validation\Rule;
+use App\Models\Material;
 
-public function rules(): array
+public function show(Project $project): Response
 {
-    return [
-        'title'           => ['required', 'string', 'max:255'],
-        'description'     => ['nullable', 'string'],
-        'status'          => ['sometimes', Rule::enum(ProjectStatus::class)],
-        'priority'        => ['sometimes', Rule::enum(ProjectPriority::class)],
-        'estimated_hours' => ['nullable', 'numeric', 'min:0'],
-        'estimated_cost'  => ['nullable', 'numeric', 'min:0'],
-        'sell_price'      => ['nullable', 'numeric', 'min:0'],
-        'started_at'      => ['nullable', 'date'],
-        'completed_at'    => ['nullable', 'date'],
-        'deadline'        => ['nullable', 'date'],
-        'notes'           => ['nullable', 'string'],
-        'is_commission'   => ['boolean'],
-        'client_name'     => ['nullable', 'string', 'max:255'],
-        'client_contact'  => ['nullable', 'string', 'max:255'],
-    ];
+    $project->load([
+        'photos'      => fn($q) => $q->orderBy('sort_order'),
+        'notes'       => fn($q) => $q->orderBy('created_at', 'desc'),
+        'timeEntries' => fn($q) => $q->orderBy('started_at', 'desc'),
+        'materials',  // BelongsToMany — pivot data included via withPivot in model
+        'expenses'    => fn($q) => $q->orderBy('expense_date', 'desc'),
+        'revenues'    => fn($q) => $q->orderBy('received_date', 'desc'),
+    ]);
+
+    return Inertia::render('Projects/Show', [
+        'project'   => $project,
+        'materials' => Material::all(['id', 'name', 'unit']),
+    ]);
 }
 ```
 
-`status` and `priority` use `sometimes` because new projects default to `planned` / `medium` if not supplied. `is_commission` is a boolean and defaults to false.
+Key decisions:
+- `Material::all(['id', 'name', 'unit'])` passes the minimal columns needed for the attach-
+  material select dropdown. It is a separate prop, not nested under project.
+- The `materials` relationship on `Project` uses `withPivot(['quantity_used', 'cost_at_time',
+  'notes'])` already defined in the model, so pivot data arrives automatically.
+- Enum casts on `Project` (`status`, `priority`) are backed strings. Laravel serialises PHP
+  Enums as their `->value` when casting to JSON for Inertia, so the frontend receives plain
+  strings like `"in_progress"` and `"high"`.
 
-### UpdateProjectRequest
+### 3.2 Route Binding
 
-Same rules as `StoreProjectRequest` but all fields wrapped with `sometimes` to allow partial updates:
+`Project` uses `getRouteKeyName() => 'slug'`. The route parameter in `routes/web.php` is
+`{project}`. Laravel resolves the model by slug automatically. No changes to the route file
+are needed.
 
-```php
-public function rules(): array
-{
-    return [
-        'title'           => ['sometimes', 'required', 'string', 'max:255'],
-        'description'     => ['sometimes', 'nullable', 'string'],
-        'status'          => ['sometimes', Rule::enum(ProjectStatus::class)],
-        'priority'        => ['sometimes', Rule::enum(ProjectPriority::class)],
-        'estimated_hours' => ['sometimes', 'nullable', 'numeric', 'min:0'],
-        'estimated_cost'  => ['sometimes', 'nullable', 'numeric', 'min:0'],
-        'sell_price'      => ['sometimes', 'nullable', 'numeric', 'min:0'],
-        'started_at'      => ['sometimes', 'nullable', 'date'],
-        'completed_at'    => ['sometimes', 'nullable', 'date'],
-        'deadline'        => ['sometimes', 'nullable', 'date'],
-        'notes'           => ['sometimes', 'nullable', 'string'],
-        'is_commission'   => ['sometimes', 'boolean'],
-        'client_name'     => ['sometimes', 'nullable', 'string', 'max:255'],
-        'client_contact'  => ['sometimes', 'nullable', 'string', 'max:255'],
-    ];
+---
+
+## 4. Frontend: `Projects/Show.jsx` — Component Structure
+
+### 4.1 Imports
+
+```jsx
+import AppLayout from '@/Layouts/AppLayout';
+import { Head, useForm, router, usePage } from '@inertiajs/react';
+import { useState } from 'react';
+import Button from '@/Components/ui/Button';
+import Badge from '@/Components/ui/Badge';
+import { Card, CardHeader, CardTitle, CardContent } from '@/Components/ui/Card';
+import Input from '@/Components/ui/Input';
+import Label from '@/Components/ui/Label';
+import Select from '@/Components/ui/Select';
+import Textarea from '@/Components/ui/Textarea';
+import {
+    Table, TableHeader, TableBody, TableRow, TableHead, TableCell
+} from '@/Components/ui/Table';
+import Alert from '@/Components/ui/Alert';
+```
+
+`Modal` is not used — all forms are inline (collapsed/expanded via local `useState` toggles).
+
+### 4.2 Props Signature
+
+```jsx
+export default function ProjectShow({ project, materials }) { ... }
+```
+
+`project` contains the eager-loaded relationships as nested arrays. `materials` is the flat list
+for the attach-material select.
+
+### 4.3 Flash Messages
+
+Read from `usePage().props.flash` at the top of the component body:
+
+```jsx
+const { flash } = usePage().props;
+```
+
+Render at the very top of the page content area, before the page header:
+
+```jsx
+{flash?.success && <Alert variant="success">{flash.success}</Alert>}
+{flash?.error   && <Alert variant="error">{flash.error}</Alert>}
+```
+
+This covers redirects from all inline form POSTs. The backend must flash messages before
+redirecting back; that is handled by Tasks 01–04 controllers.
+
+---
+
+## 5. Section-by-Section Layout
+
+### 5.1 Page Header
+
+Placement: above all sections, full width.
+
+Content:
+- `<h1>` with `project.title`
+- Status badge — maps `project.status` string to a readable label and a badge variant
+- Priority badge — maps `project.priority` string to a label and a badge variant
+- "Edit" button (`variant="outline"`) linking to `/projects/{project.slug}/edit` via
+  `router.get` or an Inertia `<Link>`
+- "Delete" button (`variant="destructive"`) that calls `router.delete` after
+  `window.confirm('Delete this project? This cannot be undone.')`
+
+Status-to-badge variant mapping (use `Badge` with `variant` prop):
+
+| Status value | Label | Badge variant |
+|---|---|---|
+| `planned` | Planned | `secondary` |
+| `designing` | Designing | `secondary` |
+| `in_progress` | In Progress | `default` |
+| `finishing` | Finishing | `default` |
+| `on_hold` | On Hold | `outline` |
+| `completed` | Completed | `secondary` |
+| `archived` | Archived | `outline` |
+
+Priority-to-badge variant mapping:
+
+| Priority value | Label | Badge variant |
+|---|---|---|
+| `low` | Low | `secondary` |
+| `medium` | Medium | `default` |
+| `high` | High | `destructive` |
+| `urgent` | Urgent | `destructive` |
+
+Delete handler:
+
+```jsx
+function handleDelete() {
+    if (!window.confirm('Delete this project? This cannot be undone.')) return;
+    router.delete(`/projects/${project.slug}`);
 }
 ```
 
-### StoreProjectPhotoRequest
+### 5.2 Overview Section
 
-```php
-public function rules(): array
-{
-    return [
-        'photo'      => ['required', 'file', 'image', 'mimes:jpeg,png,webp', 'max:10240'],
-        'caption'    => ['nullable', 'string', 'max:255'],
-        'sort_order' => ['nullable', 'integer', 'min:0'],
-        'is_portfolio' => ['boolean'],
-    ];
+Render inside a `Card`. Displays project metadata in a two-column definition grid.
+
+Fields to show (label: value):
+- Description — full text, preserve whitespace with `whitespace-pre-wrap` on a `<p>`
+- Status — human-readable label
+- Priority — human-readable label
+- Estimated hours — number or em-dash if null
+- Estimated cost — formatted as currency or em-dash
+- Actual cost — formatted as currency or em-dash
+- Sell price — formatted as currency or em-dash
+- Started — formatted date or em-dash
+- Completed — formatted date or em-dash
+- Deadline — formatted date or em-dash
+- Commission — Yes / No (boolean from `project.is_commission`)
+- Client name — text or em-dash
+- Client contact — text or em-dash
+
+Helper for currency formatting:
+
+```jsx
+function formatCurrency(value) {
+    if (value == null) return '—';
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+}
+
+function formatDate(value) {
+    if (!value) return '—';
+    return new Date(value).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 ```
 
-`max:10240` is 10MB in kilobytes (Laravel's `max` file rule uses KB). `image` rule validates MIME type is an image type; `mimes:jpeg,png,webp` further restricts to specific formats.
+### 5.3 Photos Section
 
-### LogTimeRequest
+Render inside a `Card`.
 
-```php
-public function rules(): array
-{
-    return [
-        'started_at'       => ['required', 'date'],
-        'ended_at'         => ['nullable', 'date', 'after_or_equal:started_at'],
-        'description'      => ['nullable', 'string', 'max:255'],
-        'duration_minutes' => ['nullable', 'integer', 'min:1'],
-    ];
-}
+#### Read area
+
+Thumbnail grid: `grid grid-cols-2 sm:grid-cols-4 gap-3`. Each photo renders as an `<img>`
+with `src` built from the `thumbnail_path` (or `file_path` if thumbnail is null). Below each
+image show the `caption` in small gray text.
+
+If `project.photos.length === 0`, show a "No photos yet." empty-state paragraph.
+
+#### Upload form
+
+State: `const photoForm = useForm({ photo: null, caption: '', is_portfolio: false });`
+
+The form must use `forceFormData: true` because it uploads a file:
+
+```jsx
+photoForm.post(`/projects/${project.slug}/photos`, { forceFormData: true });
 ```
 
-`duration_minutes` is nullable because when both `started_at` and `ended_at` are provided, the model computes it in the `saving` observer (Task 04). The field is accepted here for cases where a user logs a completed entry with an explicit duration override.
+Fields:
+- File input — `<input type="file" accept="image/jpeg,image/png,image/webp">`, wired to
+  `photoForm.setData('photo', e.target.files[0])`. Use `Input` component with `type="file"`.
+- Caption — `<Input>` text, `value={photoForm.data.caption}`
+- Is portfolio — `<input type="checkbox">` (plain checkbox, not a UI primitive needed here),
+  label "Include in portfolio"
+- Submit button — `<Button loading={photoForm.processing}>Upload Photo</Button>`
 
-### AttachMaterialRequest
+Show `photoForm.errors.photo` if present, below the file input, as a `<p className="text-sm text-red-600">`.
 
-```php
-public function rules(): array
-{
-    return [
-        'material_id'   => ['required', 'ulid', Rule::exists('materials', 'id')],
-        'quantity_used' => ['required', 'numeric', 'min:0.01'],
-        'notes'         => ['nullable', 'string', 'max:255'],
-    ];
-}
-```
+### 5.4 Notes Section
 
-`Rule::exists('materials', 'id')` checks the `materials` table's `id` column. Since `id` is a ULID, the `'ulid'` format rule ensures the value is a valid 26-character ULID before the DB query runs, avoiding malformed queries.
+Render inside a `Card`.
 
-### AddNoteRequest
+#### Read area
 
-```php
-public function rules(): array
-{
-    return [
-        'content' => ['required', 'string'],
-    ];
-}
-```
+List entries newest-first (already ordered by controller). Each entry:
+- `created_at` formatted as relative or absolute date (use `formatDate`)
+- `content` in a `<p className="whitespace-pre-wrap text-gray-700 text-sm mt-1">`
 
-No max length — project notes support full markdown text.
+Separator between entries: `<hr className="border-gray-100">`.
 
-### StoreMaterialRequest
+If `project.notes.length === 0`, show "No notes yet."
 
-```php
-use App\Enums\MaterialUnit;
+#### Add note form
 
-public function rules(): array
-{
-    return [
-        'name'                => ['required', 'string', 'max:255'],
-        'sku'                 => ['nullable', 'string', 'max:100'],
-        'description'         => ['nullable', 'string'],
-        'unit'                => ['required', Rule::enum(MaterialUnit::class)],
-        'quantity_on_hand'    => ['required', 'numeric', 'min:0'],
-        'low_stock_threshold' => ['nullable', 'numeric', 'min:0'],
-        'unit_cost'           => ['nullable', 'numeric', 'min:0'],
-        'location'            => ['nullable', 'string', 'max:255'],
-        'notes'               => ['nullable', 'string'],
-        'category_id'         => ['nullable', 'ulid', Rule::exists('material_categories', 'id')],
-        'supplier_id'         => ['nullable', 'ulid', Rule::exists('suppliers', 'id')],
-    ];
-}
-```
+State: `const noteForm = useForm({ content: '' });`
 
-### UpdateMaterialRequest
-
-Same as `StoreMaterialRequest` with `sometimes` on all fields:
-
-```php
-public function rules(): array
-{
-    return [
-        'name'                => ['sometimes', 'required', 'string', 'max:255'],
-        'sku'                 => ['sometimes', 'nullable', 'string', 'max:100'],
-        'description'         => ['sometimes', 'nullable', 'string'],
-        'unit'                => ['sometimes', 'required', Rule::enum(MaterialUnit::class)],
-        'quantity_on_hand'    => ['sometimes', 'required', 'numeric', 'min:0'],
-        'low_stock_threshold' => ['sometimes', 'nullable', 'numeric', 'min:0'],
-        'unit_cost'           => ['sometimes', 'nullable', 'numeric', 'min:0'],
-        'location'            => ['sometimes', 'nullable', 'string', 'max:255'],
-        'notes'               => ['sometimes', 'nullable', 'string'],
-        'category_id'         => ['sometimes', 'nullable', 'ulid', Rule::exists('material_categories', 'id')],
-        'supplier_id'         => ['sometimes', 'nullable', 'ulid', Rule::exists('suppliers', 'id')],
-    ];
-}
-```
-
-### AdjustStockRequest
-
-```php
-public function rules(): array
-{
-    return [
-        'quantity' => ['required', 'numeric'],
-        'notes'    => ['nullable', 'string'],
-    ];
-}
-```
-
-`quantity` is `numeric` with no `min` constraint — negative values represent stock removals (usage). The controller must guard against resulting stock going below zero if that is a business rule, but the form request does not enforce it (the controller can check after validation).
-
-### StoreToolRequest
-
-```php
-public function rules(): array
-{
-    return [
-        'name'             => ['required', 'string', 'max:255'],
-        'brand'            => ['nullable', 'string', 'max:100'],
-        'model_number'     => ['nullable', 'string', 'max:100'],
-        'serial_number'    => ['nullable', 'string', 'max:100'],
-        'purchase_date'    => ['nullable', 'date'],
-        'purchase_price'   => ['nullable', 'numeric', 'min:0'],
-        'warranty_expires' => ['nullable', 'date'],
-        'location'         => ['nullable', 'string', 'max:255'],
-        'manual_url'       => ['nullable', 'url', 'max:500'],
-        'notes'            => ['nullable', 'string'],
-        'category_id'      => ['nullable', 'ulid', Rule::exists('tool_categories', 'id')],
-    ];
-}
-```
-
-`manual_url` uses the `url` rule since the spec column is a link to a PDF manual.
-
-### UpdateToolRequest
-
-Same as `StoreToolRequest` with `sometimes`:
-
-```php
-public function rules(): array
-{
-    return [
-        'name'             => ['sometimes', 'required', 'string', 'max:255'],
-        'brand'            => ['sometimes', 'nullable', 'string', 'max:100'],
-        'model_number'     => ['sometimes', 'nullable', 'string', 'max:100'],
-        'serial_number'    => ['sometimes', 'nullable', 'string', 'max:100'],
-        'purchase_date'    => ['sometimes', 'nullable', 'date'],
-        'purchase_price'   => ['sometimes', 'nullable', 'numeric', 'min:0'],
-        'warranty_expires' => ['sometimes', 'nullable', 'date'],
-        'location'         => ['sometimes', 'nullable', 'string', 'max:255'],
-        'manual_url'       => ['sometimes', 'nullable', 'url', 'max:500'],
-        'notes'            => ['sometimes', 'nullable', 'string'],
-        'category_id'      => ['sometimes', 'nullable', 'ulid', Rule::exists('tool_categories', 'id')],
-    ];
-}
-```
-
-### LogMaintenanceRequest
-
-```php
-use App\Enums\MaintenanceType;
-
-public function rules(): array
-{
-    return [
-        'maintenance_type' => ['required', Rule::enum(MaintenanceType::class)],
-        'description'      => ['required', 'string'],
-        'performed_at'     => ['required', 'date'],
-        'cost'             => ['nullable', 'numeric', 'min:0'],
-        'usage_hours_at'   => ['nullable', 'numeric', 'min:0'],
-        'schedule_id'      => ['nullable', 'ulid', Rule::exists('maintenance_schedules', 'id')],
-    ];
-}
-```
-
-`schedule_id` is nullable — maintenance logs can be ad-hoc (not tied to a schedule). `usage_hours_at` records tool hours at the time of maintenance for tracking.
-
-### StoreExpenseRequest
-
-```php
-use App\Enums\ExpenseCategory;
-
-public function rules(): array
-{
-    return [
-        'category'     => ['required', Rule::enum(ExpenseCategory::class)],
-        'description'  => ['required', 'string', 'max:255'],
-        'amount'       => ['required', 'numeric', 'min:0.01'],
-        'expense_date' => ['required', 'date'],
-        'supplier_id'  => ['nullable', 'ulid', Rule::exists('suppliers', 'id')],
-        'project_id'   => ['nullable', 'ulid', Rule::exists('projects', 'id')],
-        'receipt_path' => ['nullable', 'string', 'max:500'],
-    ];
-}
-```
-
-`receipt_path` is a string field (file upload path stored externally) — actual file upload validation is separate if implemented.
-
-### StoreRevenueRequest
-
-```php
-public function rules(): array
-{
-    return [
-        'description'    => ['required', 'string', 'max:255'],
-        'amount'         => ['required', 'numeric', 'min:0.01'],
-        'received_date'  => ['required', 'date'],
-        'project_id'     => ['nullable', 'ulid', Rule::exists('projects', 'id')],
-        'payment_method' => ['nullable', 'string', 'max:50'],
-        'client_name'    => ['nullable', 'string', 'max:255'],
-    ];
-}
-```
-
-### CutListRequest
-
-```php
-public function rules(): array
-{
-    return [
-        'boards'                   => ['required', 'array', 'min:1'],
-        'boards.*.label'           => ['required', 'string', 'max:100'],
-        'boards.*.length'          => ['required', 'numeric', 'min:0.1'],
-        'boards.*.width'           => ['required', 'numeric', 'min:0.1'],
-        'boards.*.thickness'       => ['required', 'numeric', 'min:0.1'],
-        'boards.*.quantity'        => ['required', 'integer', 'min:1'],
-        'pieces'                   => ['required', 'array', 'min:1'],
-        'pieces.*.label'           => ['required', 'string', 'max:100'],
-        'pieces.*.length'          => ['required', 'numeric', 'min:0.1'],
-        'pieces.*.width'           => ['required', 'numeric', 'min:0.1'],
-        'pieces.*.thickness'       => ['required', 'numeric', 'min:0.1'],
-        'pieces.*.quantity'        => ['required', 'integer', 'min:1'],
-        'pieces.*.grain_direction' => ['boolean'],
-    ];
-}
-```
-
-This request is used by `CutListController@optimize`. Both `boards` and `pieces` are required arrays with nested validation using the `*` wildcard notation. `grain_direction` is a boolean flag indicating whether the piece must be cut with the grain running in a specific direction (affects optimizer rotation logic).
-
-## 4. Key Decisions
-
-### Decision 1: `authorize()` returns `true` for all requests
-
-The spec states this is a single-user tool. Laravel policies (if added in a future phase) can be enforced by overriding `authorize()` in specific requests. For this scaffold phase, `authorize()` universally returns `true`. This is documented in each class.
-
-### Decision 2: `Rule::enum()` over `in:` for enum fields
-
-`Rule::enum(ProjectStatus::class)` is the idiomatic Laravel 10+ approach. It reads the backed values from the PHP Enum class directly, so adding or removing enum cases in the future only requires updating the Enum class — not both the enum and the validation rule. The `in:` rule would require manually listing all values.
-
-### Decision 3: `'ulid'` format rule before `Rule::exists()`
-
-For all FK fields that expect a ULID, the rule array is `['nullable', 'ulid', Rule::exists('table', 'id')]`. The `'ulid'` built-in validation rule (Laravel 10+) validates the format before the database query fires. This prevents expensive DB lookups for clearly invalid input and produces cleaner error messages.
-
-### Decision 4: No `UpdateProjectRequest` uses `unique` slug validation
-
-The `slug` field is auto-generated from `title` in the model's `booted()` hook (Task 04) and is not accepted as a user-submitted field. Therefore, no slug uniqueness rule is needed in either `StoreProjectRequest` or `UpdateProjectRequest`. Controllers must not mass-assign `slug` from request data.
-
-### Decision 5: `CutListRequest` validates the inline payload, not persisted models
-
-The cut list optimizer works on a payload submitted from the frontend (boards + pieces dimensions). It does not require `project_id` for the optimize endpoint itself — the project association is optional and handled by the controller if the user wants to save the result. The request validates only the geometric data needed to run the algorithm.
-
-### Decision 6: Separate Store/Update requests per resource
-
-The task manifest specifies separate `Store*` and `Update*` requests for Project, Material, and Tool. This follows the "thin controllers, explicit validation" principle. The Update requests use `sometimes` on all non-identity fields so partial PATCH-style updates work even when sent via PUT (Laravel does not enforce full-payload requirement on PUT — that is a convention, not an HTTP requirement).
-
-### Decision 7: `FormRequestTest.php` is a Unit test, not Feature test
-
-The smoke test instantiates each Form Request class and calls `rules()` to verify the class is syntactically valid and returns an array. It does not send HTTP requests. Placing it in `tests/Unit/` avoids needing a running database for the test.
-
-```php
-// tests/Unit/FormRequestTest.php
-it('StoreProjectRequest has rules', function () {
-    $request = new \App\Http\Requests\StoreProjectRequest();
-    expect($request->rules())->toBeArray()->not->toBeEmpty();
+```jsx
+noteForm.post(`/projects/${project.slug}/notes`, {
+    onSuccess: () => noteForm.reset(),
 });
-// ... repeated for all 15 request classes
 ```
 
-## 5. Verified Dependencies
+Fields:
+- `<Textarea rows={3} value={noteForm.data.content} onChange={...} placeholder="Add a note..." />`
+- `<Button loading={noteForm.processing}>Add Note</Button>`
 
-| Dependency | Source | Notes |
-|------------|--------|-------|
-| `App\Enums\ProjectStatus` | Task 02 | Required for `Rule::enum(ProjectStatus::class)` |
-| `App\Enums\ProjectPriority` | Task 02 | Required for `Rule::enum()` |
-| `App\Enums\MaterialUnit` | Task 02 | Required for `Rule::enum()` |
-| `App\Enums\ExpenseCategory` | Task 02 | Required for `Rule::enum()` |
-| `App\Enums\MaintenanceType` | Task 02 | Required for `Rule::enum()` |
-| `materials` table with `id` column | Task 03 | Required for `Rule::exists('materials', 'id')` |
-| `material_categories` table | Task 03 | Required for `Rule::exists('material_categories', 'id')` |
-| `tool_categories` table | Task 03 | Required for `Rule::exists('tool_categories', 'id')` |
-| `suppliers` table | Task 03 | Required for `Rule::exists('suppliers', 'id')` |
-| `projects` table | Task 03 | Required for `Rule::exists('projects', 'id')` |
-| `maintenance_schedules` table | Task 03 | Required for `Rule::exists('maintenance_schedules', 'id')` |
-| `Illuminate\Validation\Rule` | Laravel framework | Included in `laravel/framework` — no extra package |
-| `'ulid'` validation rule | Laravel 10+ | Built-in rule, no extra package |
+Show `noteForm.errors.content` below the textarea if set.
 
-Note: The `Rule::exists()` calls query the database at validation time. For `FormRequestTest.php` smoke tests that only call `rules()` (not `validated()`), no database connection is needed. If the smoke test also tested `validate()`, it would need `RefreshDatabase`.
+### 5.5 Time Log Section
 
-## 6. Risks
+Render inside a `Card`.
 
-### Risk 1: `Rule::enum()` not available in the installed Laravel version
+#### Duration helper
 
-`Rule::enum()` was added in Laravel 9. This project uses Laravel 12, so it is available.
+```jsx
+function formatDuration(minutes) {
+    if (!minutes) return '—';
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    if (h === 0) return `${m}m`;
+    if (m === 0) return `${h}h`;
+    return `${h}h ${m}m`;
+}
+```
 
-**Mitigation:** None needed — confirm the framework version is 12 as stated.
+#### Total hours display
 
-### Risk 2: `'ulid'` built-in validation rule not recognized
+Sum all `duration_minutes` from `project.timeEntries` where `ended_at` is not null:
 
-`'ulid'` was added as a built-in validation rule in Laravel 10. Laravel 12 includes it.
+```jsx
+const totalMinutes = project.timeEntries
+    .filter(e => e.ended_at)
+    .reduce((sum, e) => sum + (e.duration_minutes ?? 0), 0);
+```
 
-**Mitigation:** None needed — verify once with a quick tinker call if there is doubt.
+Display as "Total: Xh Ym" in a `<p>` above the table.
 
-### Risk 3: `Rule::exists()` runs against the real database during tests
+#### Read area — entries table
 
-Feature tests that submit requests through the HTTP layer will trigger `Rule::exists()` queries. Tests must use `RefreshDatabase` so the required parent records exist.
+Columns: Date | Description | Started | Ended | Duration
 
-**Mitigation:** Task 09 (feature tests) must create the prerequisite records via factories before testing FK fields. Document this requirement in Task 09.
+```
+| Date       | Description | Started   | Ended     | Duration |
+|------------|-------------|-----------|-----------|----------|
+| Mar 1 2026 | Cut boards  | 9:00 AM   | 11:30 AM  | 2h 30m   |
+| Mar 2 2026 | Sanding     | 2:00 PM   | —         | —        |
+```
 
-### Risk 4: `AdjustStockRequest` allows negative quantity to drive stock below zero
+An entry with `ended_at == null` represents an active timer — show "Running..." in the Ended
+and Duration cells. If there is an active timer, show a "Stop Timer" button in its row that
+calls:
 
-The `quantity` field has no `min:0` constraint by design — negative values are intentional (representing usage). However, a controller must guard against resulting stock going below zero if that is a business rule.
+```jsx
+router.put(`/projects/${project.slug}/time/${entry.id}/stop`);
+```
 
-**Mitigation:** Document this in the `AdjustStockRequest` class via a docblock or inline comment. The stock guard is a business logic concern for the controller/service layer, not a form request concern.
+If `project.timeEntries.length === 0`, show "No time logged yet."
 
-### Risk 5: `CutListRequest` boards/pieces arrays could be empty
+#### Log Time form
 
-`'boards' => ['required', 'array', 'min:1']` and `'pieces' => ['required', 'array', 'min:1']` prevent empty arrays. If the frontend sends `boards: []`, validation fails with a clear error.
+State:
 
-**Mitigation:** Already addressed by `min:1` on both array rules.
+```jsx
+const timeForm = useForm({
+    started_at: '',
+    ended_at: '',
+    description: '',
+});
+```
 
-## 7. Acceptance Criteria Coverage
+```jsx
+timeForm.post(`/projects/${project.slug}/time`, {
+    onSuccess: () => timeForm.reset(),
+});
+```
 
-| Criterion | How Met |
-|-----------|---------|
-| All 15 form request files exist under `app/Http/Requests/` | 15 files enumerated in Files to Create |
-| Every request has `authorize(): bool` returning `true` | Implemented in each class |
-| Every request has `rules(): array` with appropriate rules | Full rules defined per-class above |
-| Enum fields use `Rule::enum()` | `ProjectStatus`, `ProjectPriority`, `MaterialUnit`, `ExpenseCategory`, `MaintenanceType` all use `Rule::enum()` |
-| FK fields use `Rule::exists()` pointing to the correct table | All FK fields use `Rule::exists('table_name', 'id')` with the `'ulid'` format check preceding |
-| `php artisan test --filter FormRequestTest` passes | `tests/Unit/FormRequestTest.php` instantiates each class and calls `rules()` |
+Fields:
+- Started at — `<Input type="datetime-local" ...>`
+- Ended at — `<Input type="datetime-local" ...>` (optional — leave blank for open timer)
+- Description — `<Input type="text" placeholder="What did you work on?" ...>`
+- Submit — `<Button loading={timeForm.processing}>Log Time</Button>`
+
+#### Start Timer shortcut
+
+A secondary button that posts with just the current timestamp as `started_at`:
+
+```jsx
+function handleStartTimer() {
+    const now = new Date().toISOString().slice(0, 16); // "YYYY-MM-DDTHH:mm"
+    router.post(`/projects/${project.slug}/time`, { started_at: now });
+}
+```
+
+Render as: `<Button variant="outline" onClick={handleStartTimer}>Start Timer Now</Button>`
+
+Disable this button if any time entry already has `ended_at == null` (a timer is already
+running):
+
+```jsx
+const hasActiveTimer = project.timeEntries.some(e => !e.ended_at);
+```
+
+### 5.6 Materials Section
+
+Render inside a `Card`.
+
+#### Read area — materials table
+
+Columns: Material | Qty Used | Unit Cost | Total Cost | Notes
+
+`pivot` data arrives on each material as `material.pivot.quantity_used`,
+`material.pivot.cost_at_time`, `material.pivot.notes`.
+
+Total cost per row = `pivot.quantity_used * pivot.cost_at_time` (both may be null — show `—`
+if either is null).
+
+If `project.materials.length === 0`, show "No materials attached yet."
+
+#### Attach Material form
+
+State:
+
+```jsx
+const materialForm = useForm({
+    material_id: '',
+    quantity_used: '',
+    notes: '',
+});
+```
+
+```jsx
+materialForm.post(`/projects/${project.slug}/materials`, {
+    onSuccess: () => materialForm.reset(),
+});
+```
+
+Fields:
+- Material select — use `<Select>` component:
+  ```jsx
+  <Select
+      value={materialForm.data.material_id}
+      onChange={e => materialForm.setData('material_id', e.target.value)}
+      placeholder="Select a material..."
+      options={materials.map(m => ({ value: m.id, label: `${m.name} (${m.unit})` }))}
+      error={!!materialForm.errors.material_id}
+  />
+  ```
+- Quantity used — `<Input type="number" min="0" step="0.01" ...>`
+- Notes — `<Input type="text" placeholder="Optional notes..." ...>`
+- Submit — `<Button loading={materialForm.processing}>Attach Material</Button>`
+
+Show individual field errors below each field using:
+```jsx
+{materialForm.errors.material_id && (
+    <p className="mt-1 text-sm text-red-600">{materialForm.errors.material_id}</p>
+)}
+```
+
+### 5.7 Expenses Section
+
+Render inside a `Card`.
+
+#### Read area — expenses table
+
+Columns: Date | Category | Description | Amount
+
+`expense.category` is a raw string value (enum backed string). Map to a readable label:
+
+```jsx
+const expenseCategoryLabels = {
+    materials:     'Materials',
+    tools:         'Tools',
+    shop_supplies: 'Shop Supplies',
+    equipment:     'Equipment',
+    maintenance:   'Maintenance',
+    other:         'Other',
+};
+```
+
+Show total as a summary row or line below the table: "Total: $X,XXX.XX"
+
+If `project.expenses.length === 0`, show "No expenses recorded."
+
+This section is read-only on the project detail page. Expenses are managed from the Finance
+section. No inline creation form is required here per the acceptance criteria (expenses/revenues
+sections are "tables of linked financial data").
+
+### 5.8 Revenues Section
+
+Render inside a `Card`.
+
+#### Read area — revenues table
+
+Columns: Date | Client | Description | Payment Method | Amount
+
+If `project.revenues.length === 0`, show "No revenues recorded."
+
+Show total below table: "Total: $X,XXX.XX"
+
+Same read-only policy as expenses. No inline creation form.
+
+---
+
+## 6. Page Layout Assembly
+
+```jsx
+export default function ProjectShow({ project, materials }) {
+    const { flash } = usePage().props;
+
+    // ... form state declarations (photoForm, noteForm, timeForm, materialForm)
+    // ... helper functions (formatCurrency, formatDate, formatDuration)
+    // ... computed values (totalMinutes, hasActiveTimer)
+
+    return (
+        <AppLayout>
+            <Head title={project.title} />
+            <div className="py-8">
+                <div className="mx-auto max-w-7xl space-y-6 px-4 sm:px-6 lg:px-8">
+
+                    {/* Flash Messages */}
+                    {flash?.success && <Alert variant="success">{flash.success}</Alert>}
+                    {flash?.error   && <Alert variant="error">{flash.error}</Alert>}
+
+                    {/* Page Header */}
+                    <PageHeader ... />
+
+                    {/* Overview */}
+                    <OverviewSection ... />
+
+                    {/* Photos */}
+                    <PhotosSection ... />
+
+                    {/* Notes */}
+                    <NotesSection ... />
+
+                    {/* Time Log */}
+                    <TimeLogSection ... />
+
+                    {/* Materials */}
+                    <MaterialsSection ... />
+
+                    {/* Expenses */}
+                    <ExpensesSection ... />
+
+                    {/* Revenues */}
+                    <RevenuesSection ... />
+
+                </div>
+            </div>
+        </AppLayout>
+    );
+}
+```
+
+Each "section" above is a logical grouping rendered inline inside the component — not a
+separately exported component file. This keeps the file self-contained per the "fat page
+components" convention used in the existing Pages directory.
+
+---
+
+## 7. Key Design Decisions
+
+### Decision 1: All forms inline, no Modal
+
+The acceptance criteria say to use `Modal` only if needed. All sections benefit from visible
+inline forms rather than modal popups because the user is a solo woodworker who needs to add
+notes and log time quickly without dismissing a modal. Using inline forms also avoids the
+complexity of managing modal open/close state alongside form state.
+
+### Decision 2: `forceFormData: true` only for photo upload
+
+Only `photoForm` needs `forceFormData: true` because it includes a file input. All other forms
+send JSON by default (Inertia default). Mixing the two is correct and intentional.
+
+### Decision 3: Whitespace preservation for notes and description
+
+Notes content may contain newlines (freeform text). Using `whitespace-pre-wrap` on the render
+element preserves line breaks without introducing a markdown library. This satisfies the
+"No extra npm packages for markdown" governance rule.
+
+### Decision 4: `material.unit` displayed in the select label
+
+The `materials` prop includes the `unit` column. Appending it to the select label
+(`"Oak 1x6 (board)"`) gives the user context when choosing a material and prevents attaching
+the wrong unit of measure.
+
+### Decision 5: Expenses and revenues are read-only on this page
+
+The Finance controller manages expense/revenue creation. The project detail page links the
+related records but does not provide creation forms, per the acceptance criteria wording
+("tables of linked financial data").
+
+### Decision 6: `started_at` uses `datetime-local` input type
+
+HTML `datetime-local` produces values in `YYYY-MM-DDTHH:mm` format. The Laravel `date` and
+`datetime` cast handles this format correctly for `started_at` and `ended_at` on `TimeEntry`.
+
+### Decision 7: Stop Timer uses `router.put`, not `useForm`
+
+Stopping a timer is a single-action mutation with no form fields. Using `router.put` directly
+is simpler than creating a `useForm` instance with no data. The existing route is:
+`PUT /projects/{project}/time/{entry}/stop` → `ProjectController::stopTimer`.
+
+---
+
+## 8. Acceptance Criteria Coverage
+
+| Criterion | Implementation |
+|-----------|----------------|
+| `show()` eager-loads photos by sort_order | `'photos' => fn($q) => $q->orderBy('sort_order')` |
+| notes by created_at desc | `'notes' => fn($q) => $q->orderBy('created_at', 'desc')` |
+| timeEntries by started_at desc | `'timeEntries' => fn($q) => $q->orderBy('started_at', 'desc')` |
+| materials with pivot | `'materials'` — pivot defined via `withPivot` in Project model |
+| expenses by expense_date desc | `'expenses' => fn($q) => $q->orderBy('expense_date', 'desc')` |
+| revenues by received_date desc | `'revenues' => fn($q) => $q->orderBy('received_date', 'desc')` |
+| Passes `materials: Material::all(...)` | Second Inertia prop in `show()` |
+| Page header with title, status badge, priority badge | Section 5.1 |
+| Edit and Delete buttons | Section 5.1 |
+| Delete uses `router.delete` with `window.confirm` | Section 5.1 `handleDelete()` |
+| Overview section with all metadata | Section 5.2 |
+| Photos thumbnail grid + upload form with `forceFormData:true` | Section 5.3 |
+| Notes list newest-first + add note textarea form | Section 5.4 |
+| Time Log table with duration format, total hours, Log Time form, Start Timer shortcut | Section 5.5 |
+| Materials table with name/qty/cost/notes + Attach Material form | Section 5.6 |
+| Expenses table of linked financial data | Section 5.7 |
+| Revenues table of linked financial data | Section 5.8 |
+| Flash messages via Alert from `usePage().props.flash` | Section 4.3 |
+| All inline forms use `useForm` and post to correct routes | Sections 5.3–5.6 |
+| No extra npm packages for markdown | Section 7, Decision 3 |
+
+---
+
+## 9. Dependencies
+
+| Dependency | Source | Required By |
+|------------|--------|-------------|
+| `Project` relationships: `photos`, `notes`, `timeEntries`, `materials`, `expenses`, `revenues` | Existing `Project.php` model | `show()` eager load |
+| `ProjectMaterial` pivot with `quantity_used`, `cost_at_time`, `notes` | Existing `ProjectMaterial.php` + `Project.php` `withPivot` | Materials table pivot data |
+| `Material::all(['id','name','unit'])` | Existing `Material.php` | Attach Material select |
+| Route `projects.upload-photo` (POST `/projects/{project}/photos`) | Existing `routes/web.php` | Photo upload form |
+| Route `projects.log-time` (POST `/projects/{project}/time`) | Existing `routes/web.php` | Log Time form |
+| Route `projects.stop-timer` (PUT `/projects/{project}/time/{entry}/stop`) | Existing `routes/web.php` | Stop Timer button |
+| Route `projects.attach-material` (POST `/projects/{project}/materials`) | Existing `routes/web.php` | Attach Material form |
+| Route `projects.add-note` (POST `/projects/{project}/notes`) | Existing `routes/web.php` | Add Note form |
+| Route `projects.edit` (GET `/projects/{project}/edit`) | Laravel resource route | Edit button |
+| Route `projects.destroy` (DELETE `/projects/{project}`) | Laravel resource route | Delete button |
+| `flash` prop on Inertia shared props | Set by controllers in Tasks 01–04 | Flash Alert display |
+| All UI components: Button, Badge, Card family, Input, Label, Select, Textarea, Table family, Alert | Existing `Components/ui/` | Page rendering |
+| `AppLayout` | Existing `Layouts/AppLayout.jsx` | Page wrapper |
+
+---
+
+## 10. Risks
+
+### Risk 1: `material.pivot` may be undefined if no pivot columns arrive
+
+If the `Project::materials()` relationship `withPivot()` call is missing or incorrect, pivot
+fields will be `undefined` on the frontend. Guard each pivot access with optional chaining:
+`material.pivot?.quantity_used ?? '—'`.
+
+**Mitigation:** The existing `Project.php` already declares `withPivot(['quantity_used',
+'cost_at_time', 'notes'])`, so this is low risk. Add defensive `?.` access in the JSX anyway.
+
+### Risk 2: Photo file path serving
+
+`ProjectPhoto.file_path` and `thumbnail_path` are stored paths (e.g., `photos/abc123.jpg`).
+They must be served from `public/storage` via `storage:link`. If the symlink is not set up,
+images will 404. This task only renders `<img src={photo.thumbnail_path ?? photo.file_path}>`;
+the storage configuration is an environment concern outside this task's scope.
+
+**Mitigation:** Document in code comment that paths assume `storage:link` is active.
+
+### Risk 3: Active timer row detection
+
+The "Stop Timer" button and "Start Timer" disable logic both depend on checking
+`entry.ended_at === null`. If the backend serialises `ended_at` as `null` in JSON this works
+correctly. If it serialises as the string `"null"` or omits the key, the check will fail.
+Laravel serialises null columns as JSON `null` by default, so this is low risk.
+
+### Risk 4: `datetime-local` input and timezone
+
+`datetime-local` inputs produce local-time strings without timezone info. If the server is in a
+different timezone than the browser, `started_at` values may be stored off. For a single-user
+local tool this is acceptable. Document the assumption in a comment.

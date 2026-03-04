@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -28,6 +29,11 @@ class TimeEntry extends Model
             'ended_at'         => 'datetime',
             'duration_minutes' => 'integer',
         ];
+    }
+
+    public function scopeRunning(Builder $query): void
+    {
+        $query->whereNull('ended_at');
     }
 
     public function project(): BelongsTo

@@ -1,1057 +1,334 @@
-# Task 04 Implementation Plan — Eloquent Models with Relationships, Casts, and Traits
+# Task 04: Notes and Material Attachment Backend — Implementation Plan
 
 **Task ID:** 04
 **Domain:** backend
-**Parallel Group:** 3 (depends on Tasks 02 and 03)
-**Complexity:** high
+**Scope:** Implement `ProjectController::addNote()` and `ProjectController::attachMaterial()`
 
 ---
 
 ## 1. Approach
 
-Create all 17 Eloquent model classes under `app/Models/`. Each model is defined once and completely — no stub-then-replace pattern. The work is mechanical but must be precise: wrong relationship names or cast types cause runtime failures in all downstream tasks (factories, controllers, tests).
+Both methods are currently stubs returning `redirect()->back()` with no logic. The implementation replaces each stub with real persistence code by wiring the correct form request type-hints and interacting with the existing `ProjectNote` model and the `project_materials` BelongsToMany pivot.
 
-The implementation order follows foreign key dependencies so each model can reference its related classes without circular import confusion:
+No new files are needed. No migrations, no new models, no new request classes, and no frontend changes are required for this task.
 
-1. Leaf models (no FK dependencies): `Tag`, `MaterialCategory`, `ToolCategory`, `Supplier`
-2. Mid-tier models: `Project`, `Material`, `Tool`
-3. Dependent models: `ProjectPhoto`, `ProjectNote`, `TimeEntry`, `ProjectMaterial`, `MaintenanceSchedule`, `MaintenanceLog`, `Expense`, `Revenue`, `CutListBoard`, `CutListPiece`
-
-The `ProjectMaterial` model is the only one that extends `Pivot` instead of `Model` — this is required by Laravel for pivot models used in `belongsToMany` with `->withPivot()` or `->using()`.
-
-The three searchable models (`Project`, `Material`, `Tool`) include the `Laravel\Scout\Searchable` trait and a `toSearchableArray()` method. Scout configuration is handled separately in Task 12, but the trait must be present in these models now so Task 12's configuration work is non-breaking.
+The single file to modify is `app/Http/Controllers/ProjectController.php`.
 
 ---
 
-## 2. Files to Create/Modify
-
-All files are new creates. No existing files are modified by this task (Task 12 adds `toSearchableArray()` to existing models, but the trait inclusion here is a one-time setup).
+## 2. Files to Modify
 
 | File | Action |
-|------|--------|
-| `app/Models/Tag.php` | Create |
-| `app/Models/MaterialCategory.php` | Create |
-| `app/Models/ToolCategory.php` | Create |
-| `app/Models/Supplier.php` | Create |
-| `app/Models/Project.php` | Create |
-| `app/Models/Material.php` | Create |
-| `app/Models/Tool.php` | Create |
-| `app/Models/ProjectPhoto.php` | Create |
-| `app/Models/ProjectNote.php` | Create |
-| `app/Models/TimeEntry.php` | Create |
-| `app/Models/ProjectMaterial.php` | Create |
-| `app/Models/MaintenanceSchedule.php` | Create |
-| `app/Models/MaintenanceLog.php` | Create |
-| `app/Models/Expense.php` | Create |
-| `app/Models/Revenue.php` | Create |
-| `app/Models/CutListBoard.php` | Create |
-| `app/Models/CutListPiece.php` | Create |
+|---|---|
+| `app/Http/Controllers/ProjectController.php` | Replace two stubs with real implementations; add three new `use` imports |
 
-**Total: 17 new files**
+No other files need changes.
 
 ---
 
-## 3. Key Decisions
+## 3. Existing Code Inventory
 
-### Decision 1: HasUlids on every model including ProjectMaterial
-
-`Illuminate\Database\Eloquent\Concerns\HasUlids` overrides `newUniqueId()` to return a ULID string and sets `$incrementing = false` with `$keyType = 'string'`. Even `ProjectMaterial` (which extends `Pivot`) needs `HasUlids` because the `project_materials` table has a `ulid('id')->primary()` column per Task 03 migrations.
-
-When using `HasUlids` on a Pivot model, the trait must come after the class declaration. Laravel's `Pivot` base class already sets `$incrementing = false`, so the ULID trait's key generation is all that is added.
-
-### Decision 2: SoftDeletes only on Project, Material, Tool
-
-Only these three models have `deleted_at` columns (per spec and Task 03 migrations). Adding `SoftDeletes` to any other model will cause a database error (`Column not found: deleted_at`). This is explicitly documented per model below.
-
-### Decision 3: Project slug auto-generation in booted()
-
-The `booted()` static method on `Project` registers a `creating` observer callback. On every new record creation, if `slug` is not already set, it generates a unique slug from `title` using `Str::slug()` with a uniqueness loop.
+### `ProjectController.php` — current state
 
 ```php
-protected static function booted(): void
+// addNote stub (line 69)
+public function addNote(Request $request, Project $project): RedirectResponse
 {
-    static::creating(function (Project $project) {
-        if (empty($project->slug)) {
-            $base = Str::slug($project->title);
-            $slug = $base;
-            $i = 1;
-            while (static::withTrashed()->where('slug', $slug)->exists()) {
-                $slug = "{$base}-{$i}";
-                $i++;
-            }
-            $project->slug = $slug;
-        }
-    });
+    return redirect()->back();
+}
+
+// attachMaterial stub (line 64)
+public function attachMaterial(Request $request, Project $project): RedirectResponse
+{
+    return redirect()->back();
 }
 ```
 
-`withTrashed()` is used in the uniqueness check so that soft-deleted project slugs are not recycled. This prevents a deleted project's slug from colliding with a new one if the user tries to reuse the same title.
+Current imports include `Illuminate\Http\Request` but do not include `AddNoteRequest`, `AttachMaterialRequest`, or `Material`.
 
-The `updating` event does NOT regenerate the slug — slugs are stable identifiers. If a user renames a project, the slug stays the same. This is the standard behavior for URL slugs.
-
-### Decision 4: getRouteKeyName() on Project only
-
-Only `Project` returns `'slug'` from `getRouteKeyName()`. All other models use the default (`'id'`), which resolves by ULID. This matches the CLAUDE.md convention: "Route model binding with slug for projects, ULID for other models."
-
-### Decision 5: Enum casts use the full enum class path
-
-`$casts` entries for enum columns use the fully-qualified class name string: `'status' => ProjectStatus::class`. Laravel 12 resolves these to backed enum instances automatically. The enum classes are created by Task 02 — this task depends on Task 02 being complete before implementation.
-
-### Decision 6: Decimal columns are NOT cast in $casts
-
-Laravel's `decimal` cast is for formatting output. The database already stores them as `decimal(10,2)`, which PHP retrieves as a string (MySQL returns decimals as strings via PDO). Casting to `'decimal:2'` in `$casts` adds unnecessary processing and can cause float precision issues. Money columns are left as strings in PHP — formatted only at the presentation layer. Exception: if a calculated accessor is needed, it casts inline at that point.
-
-### Decision 7: ProjectMaterial extends Pivot, not Model
-
-When `Project` defines `belongsToMany(Material::class, 'project_materials')->using(ProjectMaterial::class)`, Laravel expects the pivot model to extend `Illuminate\Database\Eloquent\Relations\Pivot`. Using a plain `Model` subclass here would break pivot operations (e.g., syncing, attaching). The `HasUlids` trait still applies.
-
-### Decision 8: Searchable trait included but toSearchableArray() is minimal
-
-`Project`, `Material`, and `Tool` include `Laravel\Scout\Searchable`. Task 12 adds the full `toSearchableArray()` implementations. For now, each of these three models includes a stub `toSearchableArray()` that returns `$this->toArray()` — this is safe and correct for the database Scout driver until Task 12 refines it. If Scout is not yet installed when Task 04 runs, the `use Laravel\Scout\Searchable` line will cause a class-not-found error. The implementing agent must check whether `laravel/scout` is in `composer.json` and install it if needed (`composer require laravel/scout`).
-
-### Decision 9: Nullable belongsTo uses withDefault(null) for safety
-
-For nullable foreign keys (e.g., `Expense::project()`, `Material::supplier()`), the relationship method returns `null` by default when the FK is `null`. No `withDefault()` call is needed — Laravel returns `null` naturally for nullable belongsTo when the FK column is null. The implementing agent should NOT use `withDefault()` here as it would return an empty model instead of `null`, which would break null-checks in views.
-
-### Decision 10: Tag morphedByMany uses 'taggable' morph name
-
-The `Tag` model defines three `morphedByMany` relationships — one each for `Project`, `Material`, and `Tool`. The morph name is `'taggable'` in all three cases, matching the `taggables` pivot table's `taggable_type` / `taggable_id` columns created in Task 03.
+### `AddNoteRequest.php` — already complete
 
 ```php
-// In Tag.php
-public function projects(): MorphToMany
+public function rules(): array
 {
-    return $this->morphedByMany(Project::class, 'taggable');
-}
-
-public function materials(): MorphToMany
-{
-    return $this->morphedByMany(Material::class, 'taggable');
-}
-
-public function tools(): MorphToMany
-{
-    return $this->morphedByMany(Tool::class, 'taggable');
+    return [
+        'content' => ['required', 'string'],
+    ];
 }
 ```
 
-And in `Project`, `Material`, `Tool`:
+### `AttachMaterialRequest.php` — already complete
+
 ```php
-public function tags(): MorphToMany
+public function rules(): array
 {
-    return $this->morphToMany(Tag::class, 'taggable');
+    return [
+        'material_id'   => ['required', 'ulid', Rule::exists('materials', 'id')],
+        'quantity_used' => ['required', 'numeric', 'min:0.01'],
+        'notes'         => ['nullable', 'string', 'max:255'],
+    ];
 }
 ```
+
+### `ProjectNote.php` — already complete
+
+- Extends `Model`, uses `HasFactory`, `HasUlids`
+- `$fillable`: `['project_id', 'content']`
+- `project()` BelongsTo relationship defined
+
+### `ProjectMaterial.php` — already complete
+
+- Extends `Pivot`, uses `HasFactory`, `HasUlids`
+- `const UPDATED_AT = null`
+- `$fillable`: `['project_id', 'material_id', 'quantity_used', 'cost_at_time', 'notes']`
+
+### `Project.php` — relevant relationships already defined
+
+```php
+public function notes(): HasMany
+{
+    return $this->hasMany(ProjectNote::class);
+}
+
+public function materials(): BelongsToMany
+{
+    return $this->belongsToMany(Material::class, 'project_materials')
+        ->using(ProjectMaterial::class)
+        ->withPivot(['quantity_used', 'cost_at_time', 'notes']);
+}
+```
+
+### `Material.php` — relevant field
+
+`unit_cost` is declared in `$fillable`. It is stored as `decimal(10,2)` (nullable). PHP/PDO returns decimal columns as strings.
 
 ---
 
-## 4. Complete Model Specifications
+## 4. Implementation
 
-### Tag.php
+### 4.1 New imports to add to `ProjectController.php`
 
 ```php
-<?php
+use App\Http\Requests\AddNoteRequest;
+use App\Http\Requests\AttachMaterialRequest;
+use App\Models\Material;
+```
 
-namespace App\Models;
+`Illuminate\Http\Request` should remain because other stub methods in the controller still use it.
 
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\MorphToMany;
+### 4.2 `addNote()` — full implementation
 
-class Tag extends Model
+Replace:
+
+```php
+public function addNote(Request $request, Project $project): RedirectResponse
 {
-    use HasUlids;
+    return redirect()->back();
+}
+```
 
-    public $timestamps = false;
+With:
 
-    protected $fillable = [
-        'name',
-        'color',
+```php
+public function addNote(AddNoteRequest $request, Project $project): RedirectResponse
+{
+    $project->notes()->create([
+        'content' => $request->validated('content'),
+    ]);
+
+    return redirect()->back()->with('success', 'Note added.');
+}
+```
+
+**How it works:**
+
+- `AddNoteRequest` replaces the generic `Request` type-hint. Laravel automatically validates the request before the method body runs; invalid requests redirect with errors before reaching this code.
+- `$project->notes()` is the `HasMany` relationship on `Project`. Calling `->create()` on it automatically sets `project_id = $project->id` on the new `ProjectNote` record.
+- `HasUlids` on `ProjectNote` auto-generates the ULID `id` during the `creating` event. Do not pass `id` into the `create()` call.
+- The flash key `'success'` is a convention that the frontend can read from the shared Inertia props.
+
+### 4.3 `attachMaterial()` — full implementation
+
+Replace:
+
+```php
+public function attachMaterial(Request $request, Project $project): RedirectResponse
+{
+    return redirect()->back();
+}
+```
+
+With:
+
+```php
+public function attachMaterial(AttachMaterialRequest $request, Project $project): RedirectResponse
+{
+    $data     = $request->validated();
+    $material = Material::findOrFail($data['material_id']);
+
+    $costAtTime = $material->unit_cost !== null
+        ? round($material->unit_cost * $data['quantity_used'], 2)
+        : null;
+
+    $pivotData = [
+        'quantity_used' => $data['quantity_used'],
+        'cost_at_time'  => $costAtTime,
+        'notes'         => $data['notes'] ?? null,
     ];
 
-    public function projects(): MorphToMany
-    {
-        return $this->morphedByMany(Project::class, 'taggable');
+    $alreadyAttached = $project->materials()
+        ->where('material_id', $material->id)
+        ->exists();
+
+    if ($alreadyAttached) {
+        $project->materials()->updateExistingPivot($material->id, $pivotData);
+    } else {
+        $project->materials()->attach($material->id, $pivotData);
     }
 
-    public function materials(): MorphToMany
-    {
-        return $this->morphedByMany(Material::class, 'taggable');
-    }
-
-    public function tools(): MorphToMany
-    {
-        return $this->morphedByMany(Tool::class, 'taggable');
-    }
+    return redirect()->back()->with('success', 'Material attached.');
 }
 ```
 
-Note: `tags` table has no `created_at`/`updated_at` columns per schema, so `$timestamps = false`.
+**Step-by-step explanation:**
+
+1. `$request->validated()` returns the validated array: `material_id`, `quantity_used`, `notes`. The request's `Rule::exists('materials', 'id')` rule already confirms the material exists (and is not soft-deleted), so `findOrFail` will always succeed — it is kept here for defensive retrieval of the full model object.
+
+2. `cost_at_time` computation:
+   - `$material->unit_cost` is a nullable `decimal(10,2)` column. PHP/PDO returns it as a string (e.g., `"12.50"`) or `null`.
+   - A strict `!== null` check is used rather than a truthy check. This ensures that a `unit_cost` of `"0.00"` is treated as zero (not null) and correctly computes `cost_at_time = 0`.
+   - `round(..., 2)` keeps the result at two decimal places, consistent with `decimal(10,2)` storage. PHP string * PHP numeric yields a float, which is safe to round before storing.
+   - If `unit_cost` is null, `cost_at_time` is stored as `null`.
+
+3. Pivot payload `$pivotData` does **not** include `id`. `HasUlids` on `ProjectMaterial` hooks into the `creating` Eloquent event, which fires during `attach()`. The ULID `id` is generated automatically. `updateExistingPivot()` does not create a new row, so `HasUlids` does not fire and the existing `id` is untouched.
+
+4. Attach vs. update logic:
+   - `$project->materials()->where('material_id', $material->id)->exists()` queries the `project_materials` pivot table for a row matching both `project_id` (scoped by the relationship) and `material_id`. Returns a boolean.
+   - If false (first time): `attach($material->id, $pivotData)` inserts a new pivot row. Laravel's BelongsToMany `attach()` sets `project_id` automatically from the relationship scope.
+   - If true (already attached): `updateExistingPivot($material->id, $pivotData)` issues an `UPDATE` on the existing pivot row, replacing `quantity_used`, `cost_at_time`, and `notes` with the new values.
+   - `UPDATED_AT = null` on `ProjectMaterial` means no `updated_at` column exists in the table. `updateExistingPivot()` respects this because it uses the pivot model's `UPDATED_AT` constant — it will not attempt to write an `updated_at` value.
+
+5. The flash key `'success'` signals the frontend that the operation completed successfully.
 
 ---
 
-### MaterialCategory.php
+## 5. Final Controller Method Block (for reference)
+
+After applying both changes, the two methods in `ProjectController` look like this:
 
 ```php
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-
-class MaterialCategory extends Model
+public function attachMaterial(AttachMaterialRequest $request, Project $project): RedirectResponse
 {
-    use HasUlids;
+    $data     = $request->validated();
+    $material = Material::findOrFail($data['material_id']);
 
-    public $timestamps = false;
+    $costAtTime = $material->unit_cost !== null
+        ? round($material->unit_cost * $data['quantity_used'], 2)
+        : null;
 
-    protected $fillable = [
-        'name',
-        'sort_order',
+    $pivotData = [
+        'quantity_used' => $data['quantity_used'],
+        'cost_at_time'  => $costAtTime,
+        'notes'         => $data['notes'] ?? null,
     ];
 
-    public function materials(): HasMany
-    {
-        return $this->hasMany(Material::class, 'category_id');
+    $alreadyAttached = $project->materials()
+        ->where('material_id', $material->id)
+        ->exists();
+
+    if ($alreadyAttached) {
+        $project->materials()->updateExistingPivot($material->id, $pivotData);
+    } else {
+        $project->materials()->attach($material->id, $pivotData);
     }
+
+    return redirect()->back()->with('success', 'Material attached.');
+}
+
+public function addNote(AddNoteRequest $request, Project $project): RedirectResponse
+{
+    $project->notes()->create([
+        'content' => $request->validated('content'),
+    ]);
+
+    return redirect()->back()->with('success', 'Note added.');
 }
 ```
 
-Note: `material_categories` has no `created_at`/`updated_at` per schema, so `$timestamps = false`.
-
----
-
-### ToolCategory.php
+And the imports block gains three lines:
 
 ```php
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-
-class ToolCategory extends Model
-{
-    use HasUlids;
-
-    public $timestamps = false;
-
-    protected $fillable = [
-        'name',
-        'sort_order',
-    ];
-
-    public function tools(): HasMany
-    {
-        return $this->hasMany(Tool::class, 'category_id');
-    }
-}
-```
-
----
-
-### Supplier.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-
-class Supplier extends Model
-{
-    use HasUlids;
-
-    protected $fillable = [
-        'name',
-        'contact_name',
-        'phone',
-        'email',
-        'website',
-        'address',
-        'notes',
-    ];
-
-    public function materials(): HasMany
-    {
-        return $this->hasMany(Material::class);
-    }
-
-    public function expenses(): HasMany
-    {
-        return $this->hasMany(Expense::class);
-    }
-}
+use App\Http\Requests\AddNoteRequest;
+use App\Http\Requests\AttachMaterialRequest;
+use App\Models\Material;
 ```
 
 ---
 
-### Project.php
+## 6. Edge Cases and Constraints
 
-```php
-<?php
+### `HasUlids` on `ProjectMaterial` (Pivot)
 
-namespace App\Models;
+`ProjectMaterial` extends `Pivot` and uses `HasUlids`. Laravel's `attach()` internally calls `newPivot()` followed by `save()`, which fires the standard Eloquent model events including `creating`. `HasUlids` boots via `static::creating()` and calls `$model->setAttribute($model->getKeyName(), $model->newUniqueId())` — this auto-populates the `id` column before the INSERT. No manual `id` assignment is needed in `$pivotData` and none must be made.
 
-use App\Enums\ProjectPriority;
-use App\Enums\ProjectStatus;
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\MorphToMany;
-use Illuminate\Database\Eloquent\SoftDeletes;
-use Illuminate\Support\Str;
-use Laravel\Scout\Searchable;
+`updateExistingPivot()` issues a direct `UPDATE` query via the pivot query builder — it does not instantiate a new model or fire `creating`, so `HasUlids` does not fire and the existing `id` stays intact.
 
-class Project extends Model
-{
-    use HasUlids, SoftDeletes, Searchable;
+### `UPDATED_AT = null` on `ProjectMaterial`
 
-    protected $fillable = [
-        'title',
-        'slug',
-        'description',
-        'status',
-        'priority',
-        'estimated_hours',
-        'estimated_cost',
-        'actual_cost',
-        'sell_price',
-        'started_at',
-        'completed_at',
-        'deadline',
-        'notes',
-        'is_commission',
-        'client_name',
-        'client_contact',
-    ];
+`ProjectMaterial` declares `const UPDATED_AT = null`. When `updateExistingPivot()` builds its `UPDATE` statement, it checks `$this->using` (which resolves to `ProjectMaterial`) and respects the `UPDATED_AT` constant. No `updated_at` value is included in the `UPDATE`. The `project_materials` table therefore does not need an `updated_at` column.
 
-    protected $casts = [
-        'status'       => ProjectStatus::class,
-        'priority'     => ProjectPriority::class,
-        'is_commission' => 'boolean',
-        'started_at'   => 'datetime',
-        'completed_at' => 'datetime',
-        'deadline'     => 'date',
-    ];
+### Nullable `unit_cost`
 
-    protected static function booted(): void
-    {
-        static::creating(function (Project $project) {
-            if (empty($project->slug)) {
-                $base = Str::slug($project->title);
-                $slug = $base;
-                $i = 1;
-                while (static::withTrashed()->where('slug', $slug)->exists()) {
-                    $slug = "{$base}-{$i}";
-                    $i++;
-                }
-                $project->slug = $slug;
-            }
-        });
-    }
+`Material::unit_cost` is nullable in the schema. The computation uses a strict `!== null` check rather than `!empty()` or a truthy check, to correctly handle the edge case of a material with `unit_cost = 0.00`.
 
-    public function getRouteKeyName(): string
-    {
-        return 'slug';
-    }
+### Validation already prevents bad `material_id`
 
-    public function toSearchableArray(): array
-    {
-        return $this->toArray();
-    }
+`AttachMaterialRequest` applies `Rule::exists('materials', 'id')`, which only matches non-soft-deleted rows. If a soft-deleted material ID is passed, validation fails before the controller body runs. The `Material::findOrFail()` call is therefore guaranteed to succeed and is included purely for ORM model retrieval, not as a secondary validation gate.
 
-    // Relationships
-    public function photos(): HasMany
-    {
-        return $this->hasMany(ProjectPhoto::class);
-    }
+### Route model binding for `$project`
 
-    public function notes(): HasMany
-    {
-        return $this->hasMany(ProjectNote::class);
-    }
-
-    public function timeEntries(): HasMany
-    {
-        return $this->hasMany(TimeEntry::class);
-    }
-
-    public function projectMaterials(): HasMany
-    {
-        return $this->hasMany(ProjectMaterial::class);
-    }
-
-    public function expenses(): HasMany
-    {
-        return $this->hasMany(Expense::class);
-    }
-
-    public function revenues(): HasMany
-    {
-        return $this->hasMany(Revenue::class);
-    }
-
-    public function cutListBoards(): HasMany
-    {
-        return $this->hasMany(CutListBoard::class);
-    }
-
-    public function cutListPieces(): HasMany
-    {
-        return $this->hasMany(CutListPiece::class);
-    }
-
-    public function materials(): BelongsToMany
-    {
-        return $this->belongsToMany(Material::class, 'project_materials')
-                    ->using(ProjectMaterial::class)
-                    ->withPivot(['quantity_used', 'cost_at_time', 'notes'])
-                    ->withTimestamps();
-    }
-
-    public function tags(): MorphToMany
-    {
-        return $this->morphToMany(Tag::class, 'taggable');
-    }
-}
-```
+`Project::getRouteKeyName()` returns `'slug'`. The route `/projects/{project}/materials` (POST) binds `{project}` via slug. This is already configured and requires no changes.
 
 ---
 
-### Material.php
+## 7. Testing Guidance
 
-```php
-<?php
+Feature tests should cover the following scenarios:
 
-namespace App\Models;
+### `addNote` tests
 
-use App\Enums\MaterialUnit;
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\MorphToMany;
-use Illuminate\Database\Eloquent\SoftDeletes;
-use Laravel\Scout\Searchable;
+| Scenario | Expected outcome |
+|---|---|
+| Unauthenticated POST to `/projects/{slug}/notes` | Redirects to login |
+| Valid `content` submitted by authenticated user | `ProjectNote` created with correct `project_id` and `content`; response redirects back with `session('success')` set |
+| Missing `content` field | Validation error returned (redirect back with errors); no `ProjectNote` created |
+| Empty string `content` | Validation error (required rule fails); no `ProjectNote` created |
 
-class Material extends Model
-{
-    use HasUlids, SoftDeletes, Searchable;
+### `attachMaterial` tests
 
-    protected $fillable = [
-        'category_id',
-        'name',
-        'sku',
-        'description',
-        'unit',
-        'quantity_on_hand',
-        'low_stock_threshold',
-        'unit_cost',
-        'supplier_id',
-        'location',
-        'notes',
-    ];
-
-    protected $casts = [
-        'unit' => MaterialUnit::class,
-    ];
-
-    public function toSearchableArray(): array
-    {
-        return $this->toArray();
-    }
-
-    public function category(): BelongsTo
-    {
-        return $this->belongsTo(MaterialCategory::class, 'category_id');
-    }
-
-    public function supplier(): BelongsTo
-    {
-        return $this->belongsTo(Supplier::class);
-    }
-
-    public function projectMaterials(): HasMany
-    {
-        return $this->hasMany(ProjectMaterial::class);
-    }
-
-    public function projects(): BelongsToMany
-    {
-        return $this->belongsToMany(Project::class, 'project_materials')
-                    ->using(ProjectMaterial::class)
-                    ->withPivot(['quantity_used', 'cost_at_time', 'notes'])
-                    ->withTimestamps();
-    }
-
-    public function tags(): MorphToMany
-    {
-        return $this->morphToMany(Tag::class, 'taggable');
-    }
-}
-```
+| Scenario | Expected outcome |
+|---|---|
+| Unauthenticated POST to `/projects/{slug}/materials` | Redirects to login |
+| Valid payload, material not yet attached | New pivot row in `project_materials`; `quantity_used`, `cost_at_time`, and `notes` stored correctly |
+| Valid payload, material already attached | Existing pivot row updated; no duplicate row created |
+| `unit_cost` is null on material | `cost_at_time` stored as null |
+| `unit_cost` is `0.00` on material | `cost_at_time` stored as `0.00` (not null) |
+| `quantity_used` = `0` or negative | Validation error; no pivot row created |
+| Non-existent `material_id` | Validation error (exists rule fails); no pivot row created |
+| `notes` omitted from payload | `notes` column stored as null |
 
 ---
 
-### Tool.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\MorphToMany;
-use Illuminate\Database\Eloquent\SoftDeletes;
-use Laravel\Scout\Searchable;
-
-class Tool extends Model
-{
-    use HasUlids, SoftDeletes, Searchable;
-
-    protected $fillable = [
-        'category_id',
-        'name',
-        'brand',
-        'model_number',
-        'serial_number',
-        'purchase_date',
-        'purchase_price',
-        'warranty_expires',
-        'location',
-        'manual_url',
-        'notes',
-        'total_usage_hours',
-    ];
-
-    protected $casts = [
-        'purchase_date'    => 'date',
-        'warranty_expires' => 'date',
-    ];
-
-    public function toSearchableArray(): array
-    {
-        return $this->toArray();
-    }
-
-    public function category(): BelongsTo
-    {
-        return $this->belongsTo(ToolCategory::class, 'category_id');
-    }
-
-    public function maintenanceSchedules(): HasMany
-    {
-        return $this->hasMany(MaintenanceSchedule::class);
-    }
-
-    public function maintenanceLogs(): HasMany
-    {
-        return $this->hasMany(MaintenanceLog::class);
-    }
-
-    public function tags(): MorphToMany
-    {
-        return $this->morphToMany(Tag::class, 'taggable');
-    }
-}
-```
-
----
-
-### ProjectPhoto.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-
-class ProjectPhoto extends Model
-{
-    use HasUlids;
-
-    public $timestamps = false; // only has created_at, no updated_at per schema
-
-    // Note: schema shows only created_at. If migration uses timestamps(), add updated_at to fillable.
-    // If migration uses $table->timestamp('created_at'), set CREATED_AT and no updated_at.
-    const UPDATED_AT = null;
-
-    protected $fillable = [
-        'project_id',
-        'file_path',
-        'thumbnail_path',
-        'caption',
-        'taken_at',
-        'sort_order',
-        'is_portfolio',
-    ];
-
-    protected $casts = [
-        'taken_at'     => 'datetime',
-        'is_portfolio' => 'boolean',
-    ];
-
-    public function project(): BelongsTo
-    {
-        return $this->belongsTo(Project::class);
-    }
-}
-```
-
----
-
-### ProjectNote.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-
-class ProjectNote extends Model
-{
-    use HasUlids;
-
-    protected $fillable = [
-        'project_id',
-        'content',
-    ];
-
-    public function project(): BelongsTo
-    {
-        return $this->belongsTo(Project::class);
-    }
-}
-```
-
----
-
-### TimeEntry.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-
-class TimeEntry extends Model
-{
-    use HasUlids;
-
-    public $timestamps = false; // only created_at per schema
-    const UPDATED_AT = null;
-
-    protected $fillable = [
-        'project_id',
-        'description',
-        'started_at',
-        'ended_at',
-        'duration_minutes',
-    ];
-
-    protected $casts = [
-        'started_at'       => 'datetime',
-        'ended_at'         => 'datetime',
-        'duration_minutes' => 'integer',
-        'created_at'       => 'datetime',
-    ];
-
-    public function project(): BelongsTo
-    {
-        return $this->belongsTo(Project::class);
-    }
-}
-```
-
----
-
-### ProjectMaterial.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\Pivot;
-
-class ProjectMaterial extends Pivot
-{
-    use HasUlids;
-
-    public $timestamps = false; // only created_at per schema
-    const UPDATED_AT = null;
-
-    protected $fillable = [
-        'project_id',
-        'material_id',
-        'quantity_used',
-        'cost_at_time',
-        'notes',
-    ];
-
-    public function project(): BelongsTo
-    {
-        return $this->belongsTo(Project::class);
-    }
-
-    public function material(): BelongsTo
-    {
-        return $this->belongsTo(Material::class);
-    }
-}
-```
-
----
-
-### MaintenanceSchedule.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use App\Enums\MaintenanceType;
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-
-class MaintenanceSchedule extends Model
-{
-    use HasUlids;
-
-    protected $fillable = [
-        'tool_id',
-        'task',
-        'maintenance_type',
-        'interval_hours',
-        'interval_days',
-        'last_performed_at',
-        'next_due_at',
-        'notes',
-    ];
-
-    protected $casts = [
-        'maintenance_type'  => MaintenanceType::class,
-        'last_performed_at' => 'datetime',
-        'next_due_at'       => 'datetime',
-    ];
-
-    public function tool(): BelongsTo
-    {
-        return $this->belongsTo(Tool::class);
-    }
-
-    public function maintenanceLogs(): HasMany
-    {
-        return $this->hasMany(MaintenanceLog::class, 'schedule_id');
-    }
-}
-```
-
----
-
-### MaintenanceLog.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use App\Enums\MaintenanceType;
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-
-class MaintenanceLog extends Model
-{
-    use HasUlids;
-
-    public $timestamps = false; // only created_at per schema
-    const UPDATED_AT = null;
-
-    protected $fillable = [
-        'tool_id',
-        'schedule_id',
-        'maintenance_type',
-        'description',
-        'cost',
-        'performed_at',
-        'usage_hours_at',
-    ];
-
-    protected $casts = [
-        'maintenance_type' => MaintenanceType::class,
-        'performed_at'     => 'datetime',
-    ];
-
-    public function tool(): BelongsTo
-    {
-        return $this->belongsTo(Tool::class);
-    }
-
-    public function schedule(): BelongsTo
-    {
-        return $this->belongsTo(MaintenanceSchedule::class, 'schedule_id');
-    }
-}
-```
-
----
-
-### Expense.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use App\Enums\ExpenseCategory;
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-
-class Expense extends Model
-{
-    use HasUlids;
-
-    protected $fillable = [
-        'project_id',
-        'category',
-        'description',
-        'amount',
-        'supplier_id',
-        'receipt_path',
-        'expense_date',
-    ];
-
-    protected $casts = [
-        'category'     => ExpenseCategory::class,
-        'expense_date' => 'date',
-    ];
-
-    public function project(): BelongsTo
-    {
-        return $this->belongsTo(Project::class);
-    }
-
-    public function supplier(): BelongsTo
-    {
-        return $this->belongsTo(Supplier::class);
-    }
-}
-```
-
----
-
-### Revenue.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-
-class Revenue extends Model
-{
-    use HasUlids;
-
-    protected $fillable = [
-        'project_id',
-        'description',
-        'amount',
-        'payment_method',
-        'received_date',
-        'client_name',
-    ];
-
-    protected $casts = [
-        'received_date' => 'date',
-    ];
-
-    public function project(): BelongsTo
-    {
-        return $this->belongsTo(Project::class);
-    }
-}
-```
-
----
-
-### CutListBoard.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-
-class CutListBoard extends Model
-{
-    use HasUlids;
-
-    public $timestamps = false; // only created_at per schema
-    const UPDATED_AT = null;
-
-    protected $fillable = [
-        'project_id',
-        'material_id',
-        'label',
-        'length',
-        'width',
-        'thickness',
-        'quantity',
-    ];
-
-    public function project(): BelongsTo
-    {
-        return $this->belongsTo(Project::class);
-    }
-
-    public function material(): BelongsTo
-    {
-        return $this->belongsTo(Material::class);
-    }
-}
-```
-
----
-
-### CutListPiece.php
-
-```php
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Concerns\HasUlids;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-
-class CutListPiece extends Model
-{
-    use HasUlids;
-
-    public $timestamps = false; // only created_at per schema
-    const UPDATED_AT = null;
-
-    protected $fillable = [
-        'project_id',
-        'label',
-        'length',
-        'width',
-        'thickness',
-        'quantity',
-        'grain_direction',
-    ];
-
-    protected $casts = [
-        'grain_direction' => 'boolean',
-    ];
-
-    public function project(): BelongsTo
-    {
-        return $this->belongsTo(Project::class);
-    }
-}
-```
-
----
-
-## 5. Verified Dependencies
-
-| Dependency | Required By | Status |
-|------------|-------------|--------|
-| Task 02 — PHP Enum classes | `$casts` arrays reference `ProjectStatus::class`, `ProjectPriority::class`, `MaterialUnit::class`, `ExpenseCategory::class`, `MaintenanceType::class` | Must complete before Task 04 |
-| Task 03 — Database migrations | `php artisan migrate` must have run; models reference table structures | Must complete before Task 04 |
-| `laravel/scout` package | `Project`, `Material`, `Tool` use `Laravel\Scout\Searchable` | May need `composer require laravel/scout` if not already in `composer.json`. Check before writing models. |
-| Laravel 12.53.0 | `HasUlids` trait (`Illuminate\Database\Eloquent\Concerns\HasUlids`) available since Laravel 9 | Confirmed installed |
-| PHP 8.3.6 | PHP enums are used in `$casts`; requires PHP 8.1+ | Confirmed installed |
-
----
-
-## 6. Risks
-
-### Risk 1: laravel/scout not installed
-
-The `Searchable` trait is from `laravel/scout`, which may not be in `composer.json` on a fresh install. If `use Laravel\Scout\Searchable` fails, PHP will throw a class-not-found error on any request.
-
-**Mitigation:** Check `composer.json` for `laravel/scout` before writing the models. If absent, run `composer require laravel/scout` first. This does not conflict with Task 12 (Scout configuration) — Task 12 configures the driver and `toSearchableArray()`, while Task 04 only adds the trait.
-
-### Risk 2: ProjectMaterial extends Pivot — HasUlids compatibility
-
-`Pivot` has its own booting logic. `HasUlids` modifies `newUniqueId()` and `usesUniqueIds()`. These methods exist on `Model` (which `Pivot` extends), so they are available. However, if the `project_materials` migration used a regular primary key instead of `ulid('id')->primary()`, the `HasUlids` trait would generate ULIDs but the database column would be an integer — causing an insert error.
-
-**Mitigation:** The Task 03 migration for `project_materials` must use `$table->ulid('id')->primary()`. Verify the migration before running `migrate:fresh`. If the migration used `$table->id()` by mistake, fix Task 03 first.
-
-### Risk 3: Slug uniqueness check with soft-deleted projects
-
-Using `static::withTrashed()->where('slug', $slug)->exists()` requires the `SoftDeletes` trait to be loaded when `booted()` runs. Since `SoftDeletes` is in the same class, this is fine. However, `withTrashed()` on a model without `SoftDeletes` would cause an error. If someone removes `SoftDeletes` from `Project` later, the `booted()` method must be updated.
-
-**Mitigation:** Document in a code comment that `withTrashed()` requires `SoftDeletes` to be present on the model.
-
-### Risk 4: $timestamps = false on models with only created_at
-
-`ProjectPhoto`, `TimeEntry`, `ProjectMaterial`, `MaintenanceLog`, `CutListBoard`, `CutListPiece` have only `created_at` per the spec schema — no `updated_at`. Setting `$timestamps = false` and `const UPDATED_AT = null` with `const CREATED_AT = 'created_at'` is the correct pattern. If `$timestamps = false` is set without the const, Eloquent will not auto-fill `created_at` either.
-
-**Mitigation:** Use `const UPDATED_AT = null` while leaving `$timestamps = true` OR use `$timestamps = false` and set `created_at` in `$fillable`. The preferred approach is `const UPDATED_AT = null` with `$timestamps = true` (the default) — this tells Eloquent to auto-set `created_at` but not touch `updated_at`. This is cleaner than `$timestamps = false`.
-
-**Revised approach:** Use `const UPDATED_AT = null;` instead of `$timestamps = false`. This preserves auto-`created_at` management while skipping `updated_at`. The model code above shows `$timestamps = false` + `const UPDATED_AT = null` — change this to just `const UPDATED_AT = null;` and remove `$timestamps = false` in the actual implementation.
-
-### Risk 5: Enum casting requires Task 02 to be complete
-
-If Task 04 runs before Task 02, `ProjectStatus::class`, `ProjectPriority::class`, etc. will cause PHP errors (class not found). Task ordering (Group 3 depends on Group 2) prevents this in normal execution, but if the implementing agent runs tasks out of order, this will fail.
-
-**Mitigation:** Check that `app/Enums/` contains all 5 enum files before creating model files.
-
-### Risk 6: belongsToMany withTimestamps() on project_materials
-
-The `project_materials` table has `created_at` but no `updated_at` per the spec. Calling `->withTimestamps()` on the `belongsToMany` relationship will try to set both `created_at` and `updated_at` on sync/attach operations. If `updated_at` does not exist in the table, this will throw a SQL error.
-
-**Mitigation:** If the `project_materials` migration does not include `updated_at`, use `->withPivot(['created_at'])->withTimestamps()` carefully, or omit `->withTimestamps()` entirely and let `created_at` be set manually or via the `ProjectMaterial` pivot model's booted observer. The safest approach: check the Task 03 migration for `project_materials`. If it only has `$table->timestamp('created_at')`, remove `->withTimestamps()` from the relationship definition and handle `created_at` in `ProjectMaterial::booted()`.
-
----
-
-## 7. Acceptance Criteria Coverage
-
-| Criterion | How Met |
-|-----------|---------|
-| All 17 model files exist under `app/Models/` | All 17 files listed in section 2 are created |
-| All models use `HasUlids`; none use `$incrementing = true` with integers | `HasUlids` trait applied to all models; trait sets `$incrementing = false` and `$keyType = 'string'` automatically |
-| `Project`, `Material`, `Tool` use `SoftDeletes` | `SoftDeletes` trait applied in those three model definitions |
-| All enum columns cast to the correct Enum class | `$casts` arrays map every enum column to its PHP enum class (e.g., `'status' => ProjectStatus::class`) |
-| `Project::getRouteKeyName()` returns `'slug'` | Implemented in `Project.php` as shown in section 4 |
-| `Project` auto-generates a unique slug from title on create | `booted()` static hook with `creating` callback and uniqueness loop |
-| `ProjectMaterial` extends `Pivot` | Class declaration: `class ProjectMaterial extends Pivot` |
-| `Project`, `Material`, `Tool` use `Laravel\Scout\Searchable` | Trait applied to all three; stub `toSearchableArray()` returns `$this->toArray()` |
-| `php artisan migrate:fresh` + tinker relationship calls throw no errors | All relationship methods are defined with correct foreign key column names matching Task 03 migration columns |
+## 8. Acceptance Criteria Checklist
+
+| Criterion | Implementation detail |
+|---|---|
+| `addNote()` uses `AddNoteRequest` | Type-hint changed from `Request` to `AddNoteRequest` |
+| Creates `ProjectNote` with `project_id` and `content` | `$project->notes()->create(['content' => ...])` sets `project_id` via relationship scope |
+| Redirects back with flash | `redirect()->back()->with('success', 'Note added.')` |
+| `attachMaterial()` uses `AttachMaterialRequest` | Type-hint changed from `Request` to `AttachMaterialRequest` |
+| Attaches if not yet attached | `attach($material->id, $pivotData)` branch when `exists()` returns false |
+| Updates pivot if already attached | `updateExistingPivot($material->id, $pivotData)` branch when `exists()` returns true |
+| `cost_at_time` = `unit_cost * quantity_used` | Computed as `round($material->unit_cost * $data['quantity_used'], 2)` |
+| `cost_at_time` = null when `unit_cost` is null | Strict `!== null` check before multiplication |
+| Do not manually set `id` on `ProjectNote` or `ProjectMaterial` | `HasUlids` auto-generates both; `id` is absent from all `create()` and `attach()` payloads |

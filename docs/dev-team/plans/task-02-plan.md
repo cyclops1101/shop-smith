@@ -1,20 +1,21 @@
-# Task 02 Plan: PHP Enum Classes
+# Task 02 Plan: Photo Upload Backend
 
 **Task ID:** 02
 **Domain:** backend
-**Parallel Group:** 2 (depends on Task 01)
-**Complexity:** low
+**Feature:** `ProjectController::uploadPhoto()` + `PhotoUploadService`
 **Status:** pending
 
 ---
 
 ## 1. Approach
 
-Create 5 PHP backed string enum classes under `app/Enums/`. Each enum represents a domain concept whose values are stored as strings in the database and used as casts in Eloquent models. Each enum also provides a `label(): string` method that returns a human-readable display string, making it usable directly in Inertia-rendered dropdowns and badges without any frontend mapping logic.
+Implement photo upload in two layers following the fat-models / thin-controllers / dedicated-service-class convention from CLAUDE.md.
 
-A unit test at `tests/Unit/EnumTest.php` verifies that all enum case values match their expected backing strings and that `label()` returns non-empty strings for every case. The test is runnable in isolation with `./vendor/bin/sail artisan test --filter EnumTest`.
+1. **`PhotoUploadService`** — a dedicated service class at `app/Services/PhotoUploadService.php` that encapsulates all file-system and image-processing work. It receives an `UploadedFile` instance and a `Project` model, stores the original file on the `public` disk, generates a 400 px-wide JPEG thumbnail using the Intervention Image v3 API, and returns a newly created `ProjectPhoto` model.
 
-The `app/Enums/` directory does not exist in the fresh Laravel install. It must be created before the enum files are added.
+2. **`ProjectController::uploadPhoto()`** — the controller method is slimmed to: swap `Request` for `StoreProjectPhotoRequest`, inject `PhotoUploadService` via method injection, delegate to the service, and redirect back.
+
+The `app/Services/` directory does not exist yet and must be created. No new routes, migrations, or frontend changes are required.
 
 ---
 
@@ -22,413 +23,364 @@ The `app/Enums/` directory does not exist in the fresh Laravel install. It must 
 
 | File | Action |
 |------|--------|
-| `app/Enums/ProjectStatus.php` | Create |
-| `app/Enums/ProjectPriority.php` | Create |
-| `app/Enums/MaterialUnit.php` | Create |
-| `app/Enums/ExpenseCategory.php` | Create |
-| `app/Enums/MaintenanceType.php` | Create |
-| `tests/Unit/EnumTest.php` | Create |
+| `app/Services/PhotoUploadService.php` | Create |
+| `app/Http/Controllers/ProjectController.php` | Modify (update `uploadPhoto` signature and body) |
+| `tests/Feature/PhotoUploadTest.php` | Create |
 
-No existing files are modified by this task.
+No other files are changed.
 
 ---
 
-## 3. Exact File Contents
+## 3. Exact Implementation
 
-### `app/Enums/ProjectStatus.php`
-
-7 cases: `planned`, `designing`, `in_progress`, `finishing`, `on_hold`, `completed`, `archived`
+### 3.1 `app/Services/PhotoUploadService.php`
 
 ```php
 <?php
 
-namespace App\Enums;
+namespace App\Services;
 
-enum ProjectStatus: string
+use App\Models\Project;
+use App\Models\ProjectPhoto;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
+use Intervention\Image\ImageManager;
+
+class PhotoUploadService
 {
-    case Planned    = 'planned';
-    case Designing  = 'designing';
-    case InProgress = 'in_progress';
-    case Finishing  = 'finishing';
-    case OnHold     = 'on_hold';
-    case Completed  = 'completed';
-    case Archived   = 'archived';
-
-    public function label(): string
+    /**
+     * Store the uploaded photo, generate a thumbnail, and persist the
+     * ProjectPhoto record.
+     */
+    public function store(UploadedFile $file, Project $project, ?string $caption): ProjectPhoto
     {
-        return match ($this) {
-            self::Planned    => 'Planned',
-            self::Designing  => 'Designing',
-            self::InProgress => 'In Progress',
-            self::Finishing  => 'Finishing',
-            self::OnHold     => 'On Hold',
-            self::Completed  => 'Completed',
-            self::Archived   => 'Archived',
-        };
+        $ulid      = (string) \Illuminate\Support\Str::ulid();
+        $extension = strtolower($file->getClientOriginalExtension());
+
+        // Store original on the public disk
+        $originalPath   = "projects/{$project->id}/photos/{$ulid}.{$extension}";
+        $thumbnailPath  = "projects/{$project->id}/thumbnails/{$ulid}.jpg";
+
+        Storage::disk('public')->put(
+            $originalPath,
+            file_get_contents($file->getRealPath())
+        );
+
+        // Generate 400 px-wide thumbnail (preserve aspect ratio) — Intervention Image v3
+        $manager   = ImageManager::gd();
+        $image     = $manager->read($file->getRealPath());
+        $thumbnail = $image->scale(width: 400)->toJpeg();
+
+        Storage::disk('public')->put($thumbnailPath, (string) $thumbnail);
+
+        // Determine next sort_order
+        $nextSort = (int) $project->photos()->max('sort_order') + 1;
+
+        return $project->photos()->create([
+            'file_path'      => $originalPath,
+            'thumbnail_path' => $thumbnailPath,
+            'caption'        => $caption,
+            'sort_order'     => $nextSort,
+        ]);
     }
 }
 ```
 
-### `app/Enums/ProjectPriority.php`
+**Key API choices:**
 
-4 cases: `low`, `medium`, `high`, `urgent`
+- `ImageManager::gd()` — static constructor for the GD driver, v3 API. NOT `Image::make()` (v2).
+- `$manager->read($file->getRealPath())` — v3 API to decode an image from a file path.
+- `->scale(width: 400)` — scales to 400 px wide while preserving aspect ratio. This uses `ScaleModifier` which keeps the original width-to-height ratio. Only `width` is passed; height is `null` (omitted) so it is computed proportionally.
+- `->toJpeg()` — encodes the result as JPEG. Returns an `EncodedImage` instance; cast to `string` gives the raw binary content suitable for `Storage::put()`.
+- `Storage::disk('public')->put(...)` — stores under `storage/app/public/` on the `public` disk, which is symlinked to `public/storage/` via `php artisan storage:link`.
+
+**Why `scale()` over `resize()`:**
+
+`resize()` requires both `$width` and `$height` and will stretch/distort if only one is provided. `scale()` (backed by `ScaleModifier`) is specifically designed for proportional scaling when only one dimension is supplied. Passing only `width: 400` and omitting `height` (defaults to `null`) scales to 400 px wide and computes height from the original aspect ratio.
+
+**Why `file_get_contents($file->getRealPath())` for the original:**
+
+`UploadedFile::store()` moves the temp file, which would invalidate `getRealPath()` for the thumbnail step. Using `Storage::disk('public')->put()` with the raw bytes and reading from `getRealPath()` afterwards keeps the temp file in place for the Intervention read.
+
+---
+
+### 3.2 Modified `ProjectController::uploadPhoto()`
+
+Replace the stub with:
 
 ```php
-<?php
+use App\Http\Requests\StoreProjectPhotoRequest;
+use App\Services\PhotoUploadService;
 
-namespace App\Enums;
+// ...
 
-enum ProjectPriority: string
-{
-    case Low    = 'low';
-    case Medium = 'medium';
-    case High   = 'high';
-    case Urgent = 'urgent';
+public function uploadPhoto(
+    StoreProjectPhotoRequest $request,
+    Project $project,
+    PhotoUploadService $photoUploadService
+): RedirectResponse {
+    $photoUploadService->store(
+        $request->file('photo'),
+        $project,
+        $request->input('caption')
+    );
 
-    public function label(): string
-    {
-        return match ($this) {
-            self::Low    => 'Low',
-            self::Medium => 'Medium',
-            self::High   => 'High',
-            self::Urgent => 'Urgent',
-        };
-    }
+    return redirect()->back()->with('success', 'Photo uploaded successfully.');
 }
 ```
 
-### `app/Enums/MaterialUnit.php`
-
-14 cases: `piece`, `board_foot`, `linear_foot`, `square_foot`, `sheet`, `gallon`, `quart`, `pint`, `oz`, `lb`, `kg`, `each`, `box`, `bag`
+The full updated controller head (imports only; the rest of the methods remain unchanged):
 
 ```php
-<?php
-
-namespace App\Enums;
-
-enum MaterialUnit: string
-{
-    case Piece       = 'piece';
-    case BoardFoot   = 'board_foot';
-    case LinearFoot  = 'linear_foot';
-    case SquareFoot  = 'square_foot';
-    case Sheet       = 'sheet';
-    case Gallon      = 'gallon';
-    case Quart       = 'quart';
-    case Pint        = 'pint';
-    case Oz          = 'oz';
-    case Lb          = 'lb';
-    case Kg          = 'kg';
-    case Each        = 'each';
-    case Box         = 'box';
-    case Bag         = 'bag';
-
-    public function label(): string
-    {
-        return match ($this) {
-            self::Piece      => 'Piece',
-            self::BoardFoot  => 'Board Foot',
-            self::LinearFoot => 'Linear Foot',
-            self::SquareFoot => 'Square Foot',
-            self::Sheet      => 'Sheet',
-            self::Gallon     => 'Gallon',
-            self::Quart      => 'Quart',
-            self::Pint       => 'Pint',
-            self::Oz         => 'Oz',
-            self::Lb         => 'Lb',
-            self::Kg         => 'Kg',
-            self::Each       => 'Each',
-            self::Box        => 'Box',
-            self::Bag        => 'Bag',
-        };
-    }
-}
+use App\Http\Requests\StoreProjectPhotoRequest;
+use App\Services\PhotoUploadService;
 ```
 
-### `app/Enums/ExpenseCategory.php`
+Laravel's service container resolves `PhotoUploadService` automatically via method injection because it has no unresolvable constructor parameters.
 
-6 cases: `materials`, `tools`, `shop_supplies`, `equipment`, `maintenance`, `other`
+---
 
-```php
-<?php
-
-namespace App\Enums;
-
-enum ExpenseCategory: string
-{
-    case Materials    = 'materials';
-    case Tools        = 'tools';
-    case ShopSupplies = 'shop_supplies';
-    case Equipment    = 'equipment';
-    case Maintenance  = 'maintenance';
-    case Other        = 'other';
-
-    public function label(): string
-    {
-        return match ($this) {
-            self::Materials    => 'Materials',
-            self::Tools        => 'Tools',
-            self::ShopSupplies => 'Shop Supplies',
-            self::Equipment    => 'Equipment',
-            self::Maintenance  => 'Maintenance',
-            self::Other        => 'Other',
-        };
-    }
-}
-```
-
-### `app/Enums/MaintenanceType.php`
-
-8 cases: `blade_change`, `alignment`, `cleaning`, `lubrication`, `belt_replacement`, `calibration`, `filter_change`, `other`
+### 3.3 `tests/Feature/PhotoUploadTest.php`
 
 ```php
 <?php
 
-namespace App\Enums;
+namespace Tests\Feature;
 
-enum MaintenanceType: string
-{
-    case BladeChange      = 'blade_change';
-    case Alignment        = 'alignment';
-    case Cleaning         = 'cleaning';
-    case Lubrication      = 'lubrication';
-    case BeltReplacement  = 'belt_replacement';
-    case Calibration      = 'calibration';
-    case FilterChange     = 'filter_change';
-    case Other            = 'other';
-
-    public function label(): string
-    {
-        return match ($this) {
-            self::BladeChange     => 'Blade Change',
-            self::Alignment       => 'Alignment',
-            self::Cleaning        => 'Cleaning',
-            self::Lubrication     => 'Lubrication',
-            self::BeltReplacement => 'Belt Replacement',
-            self::Calibration     => 'Calibration',
-            self::FilterChange    => 'Filter Change',
-            self::Other           => 'Other',
-        };
-    }
-}
-```
-
-### `tests/Unit/EnumTest.php`
-
-```php
-<?php
-
-namespace Tests\Unit;
-
-use App\Enums\ExpenseCategory;
-use App\Enums\MaintenanceType;
-use App\Enums\MaterialUnit;
-use App\Enums\ProjectPriority;
-use App\Enums\ProjectStatus;
+use App\Models\Project;
+use App\Models\ProjectPhoto;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
-class EnumTest extends TestCase
+class PhotoUploadTest extends TestCase
 {
+    use RefreshDatabase;
+
     #[Test]
-    public function project_status_cases_have_correct_values(): void
+    public function guest_cannot_upload_photo(): void
     {
-        $this->assertSame('planned',     ProjectStatus::Planned->value);
-        $this->assertSame('designing',   ProjectStatus::Designing->value);
-        $this->assertSame('in_progress', ProjectStatus::InProgress->value);
-        $this->assertSame('finishing',   ProjectStatus::Finishing->value);
-        $this->assertSame('on_hold',     ProjectStatus::OnHold->value);
-        $this->assertSame('completed',   ProjectStatus::Completed->value);
-        $this->assertSame('archived',    ProjectStatus::Archived->value);
+        $project = Project::factory()->create();
+
+        $response = $this->post("/projects/{$project->slug}/photos", [
+            'photo' => UploadedFile::fake()->image('test.jpg'),
+        ]);
+
+        $response->assertRedirect('/login');
     }
 
     #[Test]
-    public function project_status_labels_are_non_empty(): void
+    public function authenticated_user_can_upload_a_photo(): void
     {
-        foreach (ProjectStatus::cases() as $case) {
-            $this->assertNotEmpty($case->label(), "Label for ProjectStatus::{$case->name} is empty");
-        }
+        Storage::fake('public');
+
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+
+        $file = UploadedFile::fake()->image('workshop.jpg', 800, 600);
+
+        $response = $this->actingAs($user)->post("/projects/{$project->slug}/photos", [
+            'photo'   => $file,
+            'caption' => 'A test caption',
+        ]);
+
+        $response->assertRedirect();
+
+        // One ProjectPhoto record created
+        $this->assertDatabaseCount('project_photos', 1);
+
+        $photo = ProjectPhoto::first();
+        $this->assertSame('A test caption', $photo->caption);
+        $this->assertSame(1, $photo->sort_order);
+        $this->assertSame($project->id, $photo->project_id);
+
+        // Files exist on public disk
+        Storage::disk('public')->assertExists($photo->file_path);
+        Storage::disk('public')->assertExists($photo->thumbnail_path);
+
+        // Paths follow the naming convention
+        $this->assertStringStartsWith("projects/{$project->id}/photos/", $photo->file_path);
+        $this->assertStringStartsWith("projects/{$project->id}/thumbnails/", $photo->thumbnail_path);
+        $this->assertStringEndsWith('.jpg', $photo->thumbnail_path);
     }
 
     #[Test]
-    public function project_priority_cases_have_correct_values(): void
+    public function sort_order_increments_for_subsequent_photos(): void
     {
-        $this->assertSame('low',    ProjectPriority::Low->value);
-        $this->assertSame('medium', ProjectPriority::Medium->value);
-        $this->assertSame('high',   ProjectPriority::High->value);
-        $this->assertSame('urgent', ProjectPriority::Urgent->value);
+        Storage::fake('public');
+
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+
+        // Upload two photos
+        $this->actingAs($user)->post("/projects/{$project->slug}/photos", [
+            'photo' => UploadedFile::fake()->image('first.jpg', 400, 300),
+        ]);
+
+        $this->actingAs($user)->post("/projects/{$project->slug}/photos", [
+            'photo' => UploadedFile::fake()->image('second.jpg', 400, 300),
+        ]);
+
+        $photos = ProjectPhoto::orderBy('sort_order')->get();
+        $this->assertCount(2, $photos);
+        $this->assertSame(1, $photos[0]->sort_order);
+        $this->assertSame(2, $photos[1]->sort_order);
     }
 
     #[Test]
-    public function project_priority_labels_are_non_empty(): void
+    public function photo_upload_fails_validation_without_file(): void
     {
-        foreach (ProjectPriority::cases() as $case) {
-            $this->assertNotEmpty($case->label(), "Label for ProjectPriority::{$case->name} is empty");
-        }
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+
+        $response = $this->actingAs($user)->post("/projects/{$project->slug}/photos", []);
+
+        $response->assertSessionHasErrors(['photo']);
     }
 
     #[Test]
-    public function material_unit_has_fourteen_cases(): void
+    public function photo_upload_fails_validation_for_non_image_mime(): void
     {
-        $this->assertCount(14, MaterialUnit::cases());
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
+
+        $response = $this->actingAs($user)->post("/projects/{$project->slug}/photos", [
+            'photo' => UploadedFile::fake()->create('document.pdf', 100, 'application/pdf'),
+        ]);
+
+        $response->assertSessionHasErrors(['photo']);
     }
 
     #[Test]
-    public function material_unit_cases_have_correct_values(): void
+    public function caption_is_optional_and_may_be_null(): void
     {
-        $this->assertSame('piece',       MaterialUnit::Piece->value);
-        $this->assertSame('board_foot',  MaterialUnit::BoardFoot->value);
-        $this->assertSame('linear_foot', MaterialUnit::LinearFoot->value);
-        $this->assertSame('square_foot', MaterialUnit::SquareFoot->value);
-        $this->assertSame('sheet',       MaterialUnit::Sheet->value);
-        $this->assertSame('gallon',      MaterialUnit::Gallon->value);
-        $this->assertSame('quart',       MaterialUnit::Quart->value);
-        $this->assertSame('pint',        MaterialUnit::Pint->value);
-        $this->assertSame('oz',          MaterialUnit::Oz->value);
-        $this->assertSame('lb',          MaterialUnit::Lb->value);
-        $this->assertSame('kg',          MaterialUnit::Kg->value);
-        $this->assertSame('each',        MaterialUnit::Each->value);
-        $this->assertSame('box',         MaterialUnit::Box->value);
-        $this->assertSame('bag',         MaterialUnit::Bag->value);
-    }
+        Storage::fake('public');
 
-    #[Test]
-    public function material_unit_labels_are_non_empty(): void
-    {
-        foreach (MaterialUnit::cases() as $case) {
-            $this->assertNotEmpty($case->label(), "Label for MaterialUnit::{$case->name} is empty");
-        }
-    }
+        $user    = User::factory()->create();
+        $project = Project::factory()->create();
 
-    #[Test]
-    public function expense_category_cases_have_correct_values(): void
-    {
-        $this->assertSame('materials',     ExpenseCategory::Materials->value);
-        $this->assertSame('tools',         ExpenseCategory::Tools->value);
-        $this->assertSame('shop_supplies', ExpenseCategory::ShopSupplies->value);
-        $this->assertSame('equipment',     ExpenseCategory::Equipment->value);
-        $this->assertSame('maintenance',   ExpenseCategory::Maintenance->value);
-        $this->assertSame('other',         ExpenseCategory::Other->value);
-    }
+        $this->actingAs($user)->post("/projects/{$project->slug}/photos", [
+            'photo' => UploadedFile::fake()->image('no-caption.jpg', 400, 300),
+        ]);
 
-    #[Test]
-    public function expense_category_labels_are_non_empty(): void
-    {
-        foreach (ExpenseCategory::cases() as $case) {
-            $this->assertNotEmpty($case->label(), "Label for ExpenseCategory::{$case->name} is empty");
-        }
-    }
-
-    #[Test]
-    public function maintenance_type_cases_have_correct_values(): void
-    {
-        $this->assertSame('blade_change',     MaintenanceType::BladeChange->value);
-        $this->assertSame('alignment',        MaintenanceType::Alignment->value);
-        $this->assertSame('cleaning',         MaintenanceType::Cleaning->value);
-        $this->assertSame('lubrication',      MaintenanceType::Lubrication->value);
-        $this->assertSame('belt_replacement', MaintenanceType::BeltReplacement->value);
-        $this->assertSame('calibration',      MaintenanceType::Calibration->value);
-        $this->assertSame('filter_change',    MaintenanceType::FilterChange->value);
-        $this->assertSame('other',            MaintenanceType::Other->value);
-    }
-
-    #[Test]
-    public function maintenance_type_labels_are_non_empty(): void
-    {
-        foreach (MaintenanceType::cases() as $case) {
-            $this->assertNotEmpty($case->label(), "Label for MaintenanceType::{$case->name} is empty");
-        }
-    }
-
-    #[Test]
-    public function enums_can_be_instantiated_from_string_value(): void
-    {
-        $this->assertSame(ProjectStatus::InProgress, ProjectStatus::from('in_progress'));
-        $this->assertSame(ProjectPriority::High,     ProjectPriority::from('high'));
-        $this->assertSame(MaterialUnit::BoardFoot,   MaterialUnit::from('board_foot'));
-        $this->assertSame(ExpenseCategory::Other,    ExpenseCategory::from('other'));
-        $this->assertSame(MaintenanceType::Cleaning, MaintenanceType::from('cleaning'));
+        $this->assertNull(ProjectPhoto::first()->caption);
     }
 }
 ```
 
----
-
-## 4. Key Decisions
-
-### Decision 1: PHP `match` expression in `label()` — not `ucwords(str_replace('_', ' ', $this->value))`
-
-Using `match` is explicit and intentional. Every case gets a precisely authored label. This avoids surprising outputs for multi-word cases like `in_progress` → "In Progress" vs the potential `ucwords` result of "In_Progress". It also allows future non-obvious labels (e.g., `oz` → "oz (ounces)") without changing the backing value.
-
-### Decision 2: Case names use PascalCase, backing values use snake_case
-
-PHP enum case names must be valid PHP identifiers. `InProgress` is the case name; `in_progress` is the stored backing value that matches the database column value exactly. The Eloquent cast system calls `->value` when writing to the database, so round-tripping is transparent.
-
-### Decision 3: `label()` is an instance method, not static
-
-`$status->label()` is called on an enum instance (retrieved from the model cast). This is the natural use pattern in controllers and views. If a static lookup from a string value is needed, callers can chain: `ProjectStatus::from('in_progress')->label()`.
-
-### Decision 4: No interface or trait for `label()`
-
-A shared `HasLabel` interface would add complexity without benefit. These 5 enums are the entire domain set for this project. The pattern is consistent by convention, not enforced by a shared contract.
-
-### Decision 5: Test uses `#[Test]` attribute (PHPUnit 11)
-
-This project uses PHPUnit 11.5 (confirmed in `composer.json`). The `#[Test]` attribute is the PHPUnit 10+ modern annotation style. The `/** @test */` docblock annotation still works but is the legacy form. Using `#[Test]` is consistent with PHPUnit 11 best practices.
-
-### Decision 6: Test extends `Tests\TestCase` (not `PHPUnit\Framework\TestCase`)
-
-Unit tests in Laravel conventionally extend `Tests\TestCase` which sets up the application environment. For pure enum unit tests, extending `PHPUnit\Framework\TestCase` directly would also work (since enums need no app context), but using `Tests\TestCase` keeps the file consistent with the rest of the test suite and avoids any future issues if a test method needs app context.
+**Note on fake image thumbnails in tests:** `UploadedFile::fake()->image()` produces a real minimal GD-generated image. Intervention Image v3 reads it via `ImageManager::gd()->read()` using the actual GD extension. The test environment must have the PHP `gd` extension available (it is included in Laravel Sail's default PHP image). `Storage::fake('public')` intercepts disk writes so no real files are created on disk.
 
 ---
 
-## 5. Verified Dependencies
+## 4. File Path Structure on Disk
+
+```
+storage/app/public/
+  projects/{project_ulid}/
+    photos/
+      {ulid}.jpg          ← original (preserves original extension: jpeg/png/webp)
+      {ulid}.png
+      {ulid}.webp
+    thumbnails/
+      {ulid}.jpg          ← thumbnail, always JPEG regardless of original format
+```
+
+Accessed via URL: `Storage::url("projects/{$project->id}/photos/{$ulid}.{$ext}")` which resolves to `/storage/projects/...` after `php artisan storage:link`.
+
+---
+
+## 5. Key Decisions
+
+### Decision 1: `scale(width: 400)` not `resize(400, null)`
+
+`Image::resize()` in v3 accepts both `?int $width` and `?int $height`. When one is `null`, it does NOT automatically preserve the aspect ratio — it only resizes to the provided dimension and leaves the other unchanged, potentially producing a distorted result. `scale()` is the correct v3 method for proportional scaling: it computes the missing dimension from the aspect ratio of the original. Only `width: 400` is passed; height is omitted (defaults to `null`) to preserve aspect ratio.
+
+### Decision 2: ULID generated with `Str::ulid()`, not from the model
+
+`ProjectPhoto` uses `HasUlids` which auto-generates the model's primary key ULID on save. However, the file paths need the ULID *before* the model is saved (so paths can be written to disk first). A separate `Str::ulid()` call is used to generate the path ULID. The model's `id` ULID is generated independently by `HasUlids` on `->create()`. The path-based ULID and model ID are different — this is intentional and acceptable: the path references a unique file name, and the model ID is the record identifier.
+
+### Decision 3: Method injection for `PhotoUploadService`
+
+Laravel resolves method-injected dependencies from the service container transparently when the controller method is invoked via routing. `PhotoUploadService` has no constructor parameters, so it requires no explicit binding in `AppServiceProvider`. Method injection is used (rather than constructor injection) to match the existing stub signature pattern and to avoid inflating the controller constructor with every single-use service.
+
+### Decision 4: `Storage::disk('public')->put()` over `UploadedFile::store()`
+
+`UploadedFile::store()` uses `move_uploaded_file()` internally, which permanently moves the temp file. The thumbnail step runs *after* storing the original and needs to read from `$file->getRealPath()`. Using `file_get_contents($file->getRealPath())` + `Storage::put()` preserves the temp file for the subsequent `$manager->read()` call.
+
+### Decision 5: Always emit JPEG thumbnails
+
+All thumbnails are saved as `.jpg` regardless of the original format (jpeg, png, webp). This keeps thumbnail rendering simple, produces consistently small file sizes, and avoids storing transparency in thumbnails (PNG alpha channels are dropped). The `->toJpeg()` method on the Intervention `Image` object handles the encoding.
+
+### Decision 6: `sort_order = max(sort_order) + 1`
+
+`$project->photos()->max('sort_order') + 1` starts at 1 for the first photo (since `max` of an empty set returns `null`, and `null + 1 = 1` in PHP). This is simple and avoids gaps that a COUNT-based approach would create if photos are later deleted.
+
+---
+
+## 6. Verified Dependencies
 
 | Requirement | Status |
 |-------------|--------|
-| PHP 8.3.6 | Confirmed — backed enums require PHP 8.1+, this is 8.3 |
-| PHPUnit 11.5 | Confirmed in `composer.json` — `#[Test]` attribute supported |
-| `app/Enums/` directory | Does not exist yet — must be created before adding files |
-| No Composer packages needed | Pure PHP — no external dependencies |
-| Task 01 must be complete | Task 02 is in Parallel Group 2 (depends on Task 01). Task 01 runs `npm install` and migrations; enum files themselves need no completed state from Task 01. However, the dependency ordering in the manifest is respected. |
+| `intervention/image` v3.11 | Confirmed in `composer.json` — `"intervention/image": "^3.11"` |
+| `ImageManager::gd()` static method | Confirmed in `vendor/intervention/image/src/ImageManager.php` line 52 |
+| `$manager->read($path)` method | Confirmed in `vendor/intervention/image/src/ImageManager.php` line 85 |
+| `$image->scale(?int $width, ?int $height)` | Confirmed in `vendor/intervention/image/src/Image.php` line 653 |
+| `$image->toJpeg()` | Confirmed in `vendor/intervention/image/src/Image.php` line 931 |
+| `Storage::disk('public')` | Standard Laravel disk; `public` disk configured by default in `config/filesystems.php` |
+| `StoreProjectPhotoRequest` exists | Confirmed at `app/Http/Requests/StoreProjectPhotoRequest.php` |
+| `ProjectPhoto` model with `HasUlids` | Confirmed at `app/Models/ProjectPhoto.php` |
+| `Project::photos()` hasMany relation | Confirmed at `app/Models/Project.php` line 85 |
+| Route: `POST projects/{project}/photos` | Confirmed — named `projects.upload-photo`, resolves to `ProjectController@uploadPhoto` |
+| PHP `gd` extension | Available in Laravel Sail default image; required by `ImageManager::gd()` |
+| `app/Services/` directory | Does not exist yet — must be created before adding the service file |
 
 ---
 
-## 6. Risks and Mitigations
+## 7. Risks and Mitigations
 
-### Risk 1: Case name conflict with PHP reserved words
+### Risk 1: GD extension not loaded in the test environment
 
-**Risk:** Some enum case names could conflict with PHP keywords (e.g., `default`, `match`, `list`). None of the 39 total cases across the 5 enums use PHP reserved words. `Other` is not a reserved word.
+**Risk:** `ImageManager::gd()` requires the PHP `gd` extension. If it is not loaded, a `DriverException` is thrown.
 
-**Mitigation:** Review all case names before creation: Planned, Designing, InProgress, Finishing, OnHold, Completed, Archived, Low, Medium, High, Urgent, Piece, BoardFoot, LinearFoot, SquareFoot, Sheet, Gallon, Quart, Pint, Oz, Lb, Kg, Each, Box, Bag, Materials, Tools, ShopSupplies, Equipment, Maintenance, Other, BladeChange, Alignment, Cleaning, Lubrication, BeltReplacement, Calibration, FilterChange. None are PHP reserved words.
+**Mitigation:** Laravel Sail's default PHP 8.3 Docker image includes the `gd` extension. For CI environments, confirm `extension=gd` is enabled. The failing exception message from Intervention Image is descriptive enough to diagnose the root cause immediately.
 
-### Risk 2: `MaterialUnit::Each` — `each` is a PHP function name
+### Risk 2: `UploadedFile::fake()->image()` produces a minimal 1-color bitmap
 
-**Risk:** `each` is a built-in PHP function (deprecated since PHP 7.2, removed in PHP 8.0). As an enum case name, `Each` (PascalCase) is not a keyword — it is a valid PHP identifier. The backing string value `'each'` is a plain string stored in the database, not a function call.
+**Risk:** The fake image generated in tests is a real but minimal GD-created image (often 1×1 or specified dimensions). `scale(width: 400)` on an image smaller than 400 px wide will scale *up*, which is valid behaviour for `ScaleModifier`.
 
-**Mitigation:** None needed. `Each` as a PascalCase class constant (enum case) is unambiguous in PHP. The test explicitly asserts `MaterialUnit::Each->value === 'each'` to confirm the backing value.
+**Mitigation:** No issue. `scale()` works in both directions. The test does not assert thumbnail pixel dimensions — only that the file exists on disk.
 
-### Risk 3: Count of MaterialUnit cases
+### Risk 3: `EncodedImage` cast to `string` vs `->toString()`
 
-**Risk:** The spec lists 14 MaterialUnit cases. Miscounting during implementation could silently omit a case.
+**Risk:** `->toJpeg()` returns an `EncodedImage` object (implementing `EncodedImageInterface`). Passing it to `Storage::disk('public')->put()` requires binary string content.
 
-**Mitigation:** The test asserts `$this->assertCount(14, MaterialUnit::cases())`. If any case is missing, this assertion fails immediately. The test also explicitly asserts every backing value string for all 14 cases.
+**Mitigation:** Confirmed in `vendor/intervention/image/src/EncodedImage.php` that `EncodedImage` implements `Stringable` and casting to `(string)` returns the raw binary data. `Storage::disk('public')->put($path, (string) $thumbnail)` is correct.
 
-### Risk 4: Enum used before Eloquent cast is set up (Task 04)
+### Risk 4: `storage:link` not run in test environment
 
-**Risk:** These enums exist independently; they become useful when Eloquent models cast their columns to enum types (Task 04). If another task tries to cast before Task 04 runs, there would be a mismatch.
+**Risk:** `Storage::fake('public')` in tests replaces the disk with an in-memory filesystem, so the symlink is irrelevant for tests. In production, `php artisan storage:link` must be run once after deployment.
 
-**Mitigation:** No risk for this task itself. Enums are plain PHP files with no runtime dependencies. They can be instantiated and tested without any database, migration, or model. Task 04 depends on Task 02 completing before it runs.
+**Mitigation:** This is a deployment concern, not a code concern. The plan notes it but no code change is needed.
+
+### Risk 5: Original file extension handling for webp
+
+**Risk:** `$file->getClientOriginalExtension()` returns the client-supplied extension string (e.g., `webp`). An attacker could supply a spoofed extension. However, Laravel's `mimes:jpeg,png,webp` validation in `StoreProjectPhotoRequest` checks the actual MIME type by inspecting file content, not just the extension. Validation runs before the service is called.
+
+**Mitigation:** Rely on the validated MIME type from `StoreProjectPhotoRequest`. Extension is used only for the storage path filename; the file content has already been verified as an image of an accepted type.
 
 ---
 
-## 7. Acceptance Criteria Coverage
+## 8. Acceptance Criteria Coverage
 
 | Criterion | How Met |
 |-----------|---------|
-| All 5 enum files exist under `app/Enums/` | 5 files created: ProjectStatus.php, ProjectPriority.php, MaterialUnit.php, ExpenseCategory.php, MaintenanceType.php |
-| All enums use `string` backing type | Each declaration is `enum Foo: string` |
-| All case values match the spec exactly | Case backing values are literal string matches to the spec; verified by test assertions |
-| Each enum has a `label(): string` method | `label()` method with `match` expression defined on each enum |
-| `tests/Unit/EnumTest.php` exists with assertions | Test file created with value assertions and label non-empty checks for all 5 enums |
-| `php artisan test --filter EnumTest` passes | All test methods assert known constant values — no DB or external dependencies; will pass given correct implementation |
+| Uses `StoreProjectPhotoRequest` for validation | Controller signature changed to `StoreProjectPhotoRequest $request` — validation fires automatically before `uploadPhoto()` body executes |
+| Original stored at `projects/{project_id}/photos/{ulid}.{ext}` on `public` disk | `PhotoUploadService::store()` constructs `$originalPath = "projects/{$project->id}/photos/{$ulid}.{$extension}"` and calls `Storage::disk('public')->put($originalPath, ...)` |
+| 400 px-wide thumbnail, preserve aspect ratio, using `ImageManager::gd()` and `Image::read()` | `ImageManager::gd()->read($file->getRealPath())->scale(width: 400)` |
+| Thumbnail at `projects/{project_id}/thumbnails/{ulid}.jpg` | `$thumbnailPath = "projects/{$project->id}/thumbnails/{$ulid}.jpg"` |
+| `ProjectPhoto` record created with paths, caption, `sort_order = max+1` | `$project->photos()->create([...])` with computed `$nextSort` |
+| `PhotoUploadService` injected via method injection | `uploadPhoto(StoreProjectPhotoRequest $request, Project $project, PhotoUploadService $photoUploadService)` |
+| MUST use v3 API (`ImageManager::gd()`), NOT v2 `Image::make()` | Only v3 API used: `ImageManager::gd()`, `->read()`, `->scale()`, `->toJpeg()` |

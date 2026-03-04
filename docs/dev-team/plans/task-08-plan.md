@@ -1,578 +1,387 @@
-# Task 08 Plan: Model Factories for All Models
+# Task 08 Plan: Persistent Timer Widget in AppLayout
+
+**Task ID:** 08
+**Domain:** frontend
+**Parallel Group:** 4 (depends on Task 03)
+**Complexity:** M
+**Status:** pending
+
+---
 
 ## 1. Approach
 
-Create Eloquent factory classes for all 17 application models under `database/factories/`. Each factory extends `Illuminate\Database\Eloquent\Factories\Factory` and implements `definition(): array` returning a realistic Faker-generated data array. All factories must work with both `make()` (no DB interaction) and `create()` (requires a migrated database).
+Replace the two static `00:00:00` placeholder elements in `AppLayout.jsx` with a live timer widget implemented as an extracted `TimerWidget` component (defined in the same file or as a separate file in `Components/`). The widget reads `activeTimer` from `usePage().props.activeTimer`, manages a `setInterval` via `useEffect`, and displays a ticking `HH:MM:SS` counter in amber when a timer is running.
 
-Rules enforced across all factories:
-- Enum columns: `fake()->randomElement(EnumClass::cases())->value` — draws a random enum case and returns its string backing value
-- Money columns: `fake()->randomFloat(2, 10, 500)` — produces a positive float with 2 decimal places in the range [10, 500]
-- `Project` factory must NOT set `slug` — the model's `booted()` observer (Task 04) auto-generates it
-- Nullable FK columns default to `null` — FK relationships are expressed via factory states, not in `definition()`
-- `Tag.color` must be a valid 7-character hex string
+No new npm packages are required. The implementation uses only React built-ins (`useState`, `useEffect`) and Inertia's `usePage` and `router`, which are already imported in `AppLayout.jsx`.
 
-Also create `tests/Unit/FactoryTest.php` — a smoke test that calls `Model::factory()->make()` for every model to confirm the factory `definition()` returns valid data without touching the database.
+The plan extracts a `TimerWidget` component and renders it in both the desktop and mobile locations in `AppLayout.jsx`. Both render the same component so tick behavior is identical and state is shared (via the shared `activeTimer` prop from Inertia — not local state passed between instances; each renders its own `TimerWidget` instance since they are in different layout positions).
 
-## 2. Files to Create/Modify
+---
+
+## 2. Files to Modify
 
 | Action | Path |
 |--------|------|
-| Create | `database/factories/ProjectFactory.php` |
-| Create | `database/factories/ProjectPhotoFactory.php` |
-| Create | `database/factories/ProjectNoteFactory.php` |
-| Create | `database/factories/TimeEntryFactory.php` |
-| Create | `database/factories/MaterialFactory.php` |
-| Create | `database/factories/MaterialCategoryFactory.php` |
-| Create | `database/factories/ProjectMaterialFactory.php` |
-| Create | `database/factories/SupplierFactory.php` |
-| Create | `database/factories/ToolFactory.php` |
-| Create | `database/factories/ToolCategoryFactory.php` |
-| Create | `database/factories/MaintenanceScheduleFactory.php` |
-| Create | `database/factories/MaintenanceLogFactory.php` |
-| Create | `database/factories/ExpenseFactory.php` |
-| Create | `database/factories/RevenueFactory.php` |
-| Create | `database/factories/CutListBoardFactory.php` |
-| Create | `database/factories/CutListPieceFactory.php` |
-| Create | `database/factories/TagFactory.php` |
-| Create | `tests/Unit/FactoryTest.php` |
+| Modify | `resources/js/Layouts/AppLayout.jsx` |
 
-## 3. Factory Definitions
+No other files change. Starting/stopping the timer is done from the project detail page (Task 07); this task is display-only.
 
-### ProjectFactory
+---
 
-```php
-use App\Enums\ProjectStatus;
-use App\Enums\ProjectPriority;
+## 3. `activeTimer` Prop Shape
 
-public function definition(): array
+Task 03 adds `activeTimer` to `HandleInertiaRequests::share()`. When a timer is running, the shape is:
+
+```js
 {
-    return [
-        'title'           => fake()->sentence(3),
-        // slug intentionally omitted — model generates it
-        'description'     => fake()->optional(0.8)->paragraph(),
-        'status'          => fake()->randomElement(ProjectStatus::cases())->value,
-        'priority'        => fake()->randomElement(ProjectPriority::cases())->value,
-        'estimated_hours' => fake()->optional(0.7)->randomFloat(2, 1, 200),
-        'estimated_cost'  => fake()->optional(0.7)->randomFloat(2, 10, 500),
-        'actual_cost'     => fake()->optional(0.5)->randomFloat(2, 10, 500),
-        'sell_price'      => fake()->optional(0.4)->randomFloat(2, 10, 500),
-        'started_at'      => fake()->optional(0.6)->dateTimeBetween('-1 year', 'now'),
-        'completed_at'    => null,
-        'deadline'        => fake()->optional(0.5)->dateTimeBetween('now', '+6 months'),
-        'notes'           => fake()->optional(0.5)->paragraph(),
-        'is_commission'   => fake()->boolean(20), // 20% chance of being a commission
-        'client_name'     => null, // set in withCommission state
-        'client_contact'  => null,
-    ];
-}
-
-public function commission(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'is_commission'  => true,
-        'client_name'    => fake()->name(),
-        'client_contact' => fake()->email(),
-    ]);
-}
-
-public function inProgress(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'status'     => ProjectStatus::InProgress->value,
-        'started_at' => fake()->dateTimeBetween('-3 months', '-1 week'),
-    ]);
-}
-
-public function completed(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'status'       => ProjectStatus::Completed->value,
-        'completed_at' => fake()->dateTimeBetween('-6 months', 'now'),
-    ]);
+  id:            "01hx...",          // ULID of the TimeEntry
+  project_id:    "01hx...",          // ULID of the Project
+  project_slug:  "kitchen-island",   // slug for URL navigation
+  project_title: "Kitchen Island",   // human-readable project name
+  started_at:    "2026-03-03T14:22:00.000000Z"  // ISO 8601 UTC string
 }
 ```
 
-Key: `slug` is NOT in the definition. The `Project` model's `booted()` static method fires a `creating` observer that generates `slug` from `title` using `Str::slug()`. If `slug` were set in the factory, it would still be overwritten by the observer — but omitting it makes the intent clear and avoids confusion.
+When no timer is running (user not authenticated, or no open `TimeEntry`): `activeTimer` is `null`.
 
-### ProjectPhotoFactory
+---
 
-```php
-public function definition(): array
-{
-    return [
-        'project_id'     => Project::factory(),
-        'file_path'      => 'projects/' . fake()->uuid() . '/photos/' . fake()->uuid() . '.jpg',
-        'thumbnail_path' => 'projects/' . fake()->uuid() . '/photos/thumb_' . fake()->uuid() . '.jpg',
-        'caption'        => fake()->optional(0.6)->sentence(),
-        'taken_at'       => fake()->optional(0.7)->dateTimeBetween('-1 year', 'now'),
-        'sort_order'     => fake()->numberBetween(0, 20),
-        'is_portfolio'   => fake()->boolean(30),
-    ];
+## 4. Component Design: `TimerWidget`
+
+Extract a `TimerWidget` function component defined at the top of the file (above `AppLayout`) or in `resources/js/Components/TimerWidget.jsx`. Given this is small (under 60 lines) and only used by `AppLayout`, defining it in the same file is preferred — it avoids a new file and keeps related code together.
+
+### Props
+
+`TimerWidget` receives no props. It reads `activeTimer` directly from `usePage().props.activeTimer`. This avoids prop-drilling and ensures both the desktop and mobile renders stay synchronized with Inertia's shared state.
+
+### State
+
+```js
+const [elapsed, setElapsed] = useState(0); // milliseconds
+```
+
+`elapsed` represents how many milliseconds have passed since `activeTimer.started_at`. It is computed as `Date.now() - new Date(activeTimer.started_at).getTime()` on each tick.
+
+### Effect
+
+```js
+useEffect(() => {
+    if (!activeTimer) {
+        setElapsed(0);
+        return;
+    }
+
+    // Compute initial elapsed immediately (avoids 1-second lag on mount)
+    const startMs = new Date(activeTimer.started_at).getTime();
+    setElapsed(Date.now() - startMs);
+
+    const id = setInterval(() => {
+        setElapsed(Date.now() - startMs);
+    }, 1000);
+
+    return () => clearInterval(id);
+}, [activeTimer]);
+```
+
+Key decisions:
+- `activeTimer` is the dependency: the effect restarts whenever the active timer changes (e.g., user stops one timer and starts another — Inertia pushes a new `activeTimer` prop and the effect re-runs with the new `started_at`).
+- The initial `setElapsed` call before `setInterval` prevents a 1-second blank/zero display on mount.
+- Cleanup via `clearInterval(id)` ensures no memory leak on unmount or when `activeTimer` becomes null.
+- `startMs` is computed once per effect run (not on every tick) for efficiency.
+
+### Format Function
+
+```js
+function formatElapsed(ms) {
+    const totalSeconds = Math.floor(ms / 1000);
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    return [h, m, s]
+        .map((v) => String(v).padStart(2, '0'))
+        .join(':');
 }
 ```
 
-`project_id => Project::factory()` creates a new Project when calling `ProjectPhoto::factory()->create()`. To attach to an existing project, use `ProjectPhoto::factory()->for($project)->create()`.
+This produces `HH:MM:SS` using pure vanilla JS — no date libraries needed.
 
-### ProjectNoteFactory
+- When `elapsed = 0`: outputs `00:00:00`
+- When `elapsed = 3723000` (1h 2m 3s): outputs `01:02:03`
+- When `elapsed = 36000000` (10h): outputs `10:00:00`
 
-```php
-public function definition(): array
-{
-    return [
-        'project_id' => Project::factory(),
-        'content'    => fake()->paragraphs(2, true),
-    ];
+### Click Handler
+
+When `activeTimer` is set, the widget is clickable. Clicking navigates to the project's show page:
+
+```js
+const handleClick = () => {
+    if (activeTimer) {
+        router.visit('/projects/' + activeTimer.project_slug);
+    }
+};
+```
+
+### Render Logic
+
+```jsx
+function TimerWidget() {
+    const { activeTimer } = usePage().props;
+    const [elapsed, setElapsed] = useState(0);
+
+    useEffect(() => {
+        if (!activeTimer) {
+            setElapsed(0);
+            return;
+        }
+        const startMs = new Date(activeTimer.started_at).getTime();
+        setElapsed(Date.now() - startMs);
+        const id = setInterval(() => {
+            setElapsed(Date.now() - startMs);
+        }, 1000);
+        return () => clearInterval(id);
+    }, [activeTimer]);
+
+    const isRunning = Boolean(activeTimer);
+    const display = formatElapsed(elapsed);
+
+    if (isRunning) {
+        return (
+            <button
+                type="button"
+                onClick={() => router.visit('/projects/' + activeTimer.project_slug)}
+                className="flex items-center space-x-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 transition-colors hover:bg-amber-100"
+                title={`Timer running: ${activeTimer.project_title}`}
+            >
+                <svg
+                    className="h-4 w-4 text-amber-600"
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                >
+                    <circle cx="12" cy="12" r="10" />
+                    <polyline points="12 6 12 12 16 14" />
+                </svg>
+                <span className="font-mono text-sm font-medium text-amber-700">
+                    {display}
+                </span>
+            </button>
+        );
+    }
+
+    return (
+        <div className="flex items-center space-x-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5">
+            <svg
+                className="h-4 w-4 text-gray-500"
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+            </svg>
+            <span className="font-mono text-sm font-medium text-gray-700">
+                00:00:00
+            </span>
+        </div>
+    );
 }
 ```
 
-### TimeEntryFactory
+The idle state renders a plain `<div>` (non-interactive), preserving the existing desktop widget appearance (same Tailwind classes already in the file). The running state swaps to a `<button>` with amber colors and a `title` attribute showing the project name for accessibility.
 
-```php
-public function definition(): array
-{
-    $startedAt = fake()->dateTimeBetween('-6 months', '-1 hour');
-    $endedAt   = fake()->optional(0.8)->dateTimeBetween($startedAt, 'now');
+---
 
-    return [
-        'project_id'       => Project::factory(),
-        'description'      => fake()->optional(0.6)->sentence(),
-        'started_at'       => $startedAt,
-        'ended_at'         => $endedAt,
-        'duration_minutes' => $endedAt
-            ? (int) ((new \DateTime($endedAt->format('Y-m-d H:i:s')))->getTimestamp() -
-                     (new \DateTime($startedAt->format('Y-m-d H:i:s')))->getTimestamp()) / 60
-            : null,
-    ];
-}
+## 5. Changes to AppLayout.jsx
 
-public function running(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'ended_at'         => null,
-        'duration_minutes' => null,
-    ]);
+### Imports
+
+Add `useEffect` and `useState` to the existing React import (they are not currently imported):
+
+```js
+import { useState, useEffect } from 'react';
+```
+
+`usePage` and `router` are already imported from `@inertiajs/react` on line 1.
+
+### Add `formatElapsed` and `TimerWidget` above `AppLayout`
+
+Insert the `formatElapsed` function and `TimerWidget` component definition after the existing imports and before the `navLinks` array (or after it — before `AppLayout`).
+
+### Replace Desktop Timer Placeholder
+
+Current (lines 74-92):
+```jsx
+{/* Timer Widget Placeholder */}
+<div className="flex items-center space-x-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5">
+    <svg
+        className="h-4 w-4 text-gray-500"
+        ...
+    >
+        <circle cx="12" cy="12" r="10" />
+        <polyline points="12 6 12 12 16 14" />
+    </svg>
+    <span className="font-mono text-sm font-medium text-gray-700">
+        00:00:00
+    </span>
+</div>
+```
+
+Replacement:
+```jsx
+{/* Timer Widget */}
+<TimerWidget />
+```
+
+### Replace Mobile Timer Placeholder
+
+Current (lines 146-149):
+```jsx
+{/* Timer Widget (mobile) */}
+<span className="font-mono text-sm font-medium text-gray-700">
+    00:00:00
+</span>
+```
+
+Replacement:
+```jsx
+{/* Timer Widget (mobile) */}
+<TimerWidget />
+```
+
+Both mobile and desktop render the same `<TimerWidget />` component. Each instance maintains its own `elapsed` state and its own `setInterval`, but since both compute from the same `activeTimer.started_at` value provided by Inertia, they tick in sync. The maximum drift between instances is sub-millisecond (both read `Date.now()` independently on each tick, but both fire within the same 1000ms window).
+
+---
+
+## 6. Complete Resulting File
+
+After modifications, `AppLayout.jsx` will be structured as:
+
+```
+import { Link, Head, router, usePage } from '@inertiajs/react';
+import { useState, useEffect } from 'react';
+
+const navLinks = [ ... ];         // unchanged
+
+function isActive(...) { ... }   // unchanged
+
+function formatElapsed(ms) { ... }  // NEW
+
+function TimerWidget() { ... }      // NEW
+
+export default function AppLayout({ children, title }) {
+    // ... unchanged body ...
+    // Desktop: <TimerWidget />  (replaces static div)
+    // Mobile:  <TimerWidget />  (replaces static span)
 }
 ```
 
-Note on `duration_minutes`: The model observer auto-computes this on `saving`. However, in tests that use `make()` (no DB), the observer does not fire. Setting `duration_minutes` in the factory ensures `make()` returns a complete object. When `create()` is used, the observer recomputes it — values stay consistent.
+---
 
-### MaterialCategoryFactory
+## 7. Key Decisions
 
-```php
-public function definition(): array
-{
-    $categories = ['Hardwood', 'Plywood', 'Softwood', 'Hardware', 'Finish', 'Sheet Goods', 'Adhesives'];
+### Decision 1: `TimerWidget` in the same file, not a separate component file
 
-    return [
-        'name'       => fake()->randomElement($categories) . ' ' . fake()->word(),
-        'sort_order' => fake()->numberBetween(0, 10),
-    ];
+The component is small (~60 lines), used only by `AppLayout`, and has no independent reusability. Keeping it in `AppLayout.jsx` avoids a new file and keeps all layout-nav concerns in one place. The governance rule is to use `resources/js/Components/` for shared components — `TimerWidget` is not shared across pages, so it does not belong there.
+
+If future tasks need to render this widget elsewhere, it can be extracted to `resources/js/Components/TimerWidget.jsx` without breaking changes (just update the import in `AppLayout.jsx`).
+
+### Decision 2: `usePage()` called inside `TimerWidget`, not passed as a prop
+
+`TimerWidget` calls `usePage()` directly. This is idiomatic Inertia.js — shared props are designed to be read via `usePage()` anywhere in the tree. The alternative (passing `activeTimer` as a prop from `AppLayout`) would require `AppLayout` to read it and pass it down, adding prop-drilling for no benefit. Direct `usePage()` access also ensures both instances see the same prop value simultaneously when Inertia re-renders after navigation.
+
+### Decision 3: `activeTimer` as the single `useEffect` dependency
+
+The effect depends only on `activeTimer` (the object reference from Inertia). When Inertia does a full-page visit, all components re-mount and the effect re-runs naturally. When Inertia does a partial Inertia visit that updates `activeTimer` (e.g., stopping a timer from the project page), Inertia updates the shared props and React re-renders `TimerWidget`. The effect sees that `activeTimer` changed (new object reference or changed from non-null to null), clears the old interval, and starts a new one (or bails out if null).
+
+### Decision 4: Elapsed time computed from `Date.now()` minus `started_at` on every tick
+
+The alternative (incrementing a counter by 1000ms per tick) drifts over time because `setInterval` is not precise — it fires approximately every 1000ms but can be delayed by CPU load, browser throttling, etc. Computing `Date.now() - startMs` on every tick anchors to wall-clock time and self-corrects, ensuring the displayed time is always accurate to within one second.
+
+### Decision 5: `started_at` is an ISO 8601 UTC string from the server
+
+`new Date(activeTimer.started_at)` parses ISO 8601 strings correctly in all modern browsers. The spec states `started_at` comes from a MySQL `timestamp` column, which Inertia serializes as an ISO 8601 string in UTC (e.g., `"2026-03-03T14:22:00.000000Z"`). No timezone conversion is needed — `Date.now()` is also UTC. The difference is always correct regardless of the user's local timezone.
+
+### Decision 6: Idle widget renders a `<div>`, running widget renders a `<button>`
+
+Using a `<button>` for the interactive state follows semantic HTML and accessibility best practices — buttons are keyboard-navigable and trigger `onClick` on Enter. Using a `<div>` with `onClick` for the idle state would be wrong; the idle widget is non-interactive by spec, so `<div>` is correct and needs no `role` or `tabIndex`.
+
+### Decision 7: Both desktop and mobile use `<TimerWidget />` with the same amber styling
+
+The spec says both locations show the widget. The desktop location is a styled box (border, background). The mobile location is currently a plain `<span>`. After this change, both will render the full `<TimerWidget />` including the SVG clock icon and proper idle/running styles. The mobile location is inside `flex items-center space-x-3`, so the widget box will render inline correctly. This is a minor improvement over the current mobile implementation (which lacked the icon and box styling).
+
+---
+
+## 8. Verified Dependencies
+
+| Requirement | Status |
+|-------------|--------|
+| `usePage` imported from `@inertiajs/react` | Already in `AppLayout.jsx` line 1 |
+| `router` imported from `@inertiajs/react` | Already in `AppLayout.jsx` line 1 |
+| `useState` from React | Not yet imported — must add to import |
+| `useEffect` from React | Not yet imported — must add to import |
+| `activeTimer` shared prop from `HandleInertiaRequests` | Added in Task 03 (dependency) |
+| `activeTimer.started_at` is an ISO 8601 UTC string | Confirmed from Task 03 spec: MySQL `timestamp` column |
+| `activeTimer.project_slug` exists on the shared prop | Confirmed from Task 03 AC: `{ id, project_id, project_slug, project_title, started_at }` |
+| No new npm packages | Confirmed — only React and Inertia built-ins used |
+
+---
+
+## 9. Risks
+
+### Risk 1: Task 03 not yet complete — `activeTimer` not yet in shared props
+
+**Risk:** If Task 03 has not been implemented, `usePage().props.activeTimer` will be `undefined`, not `null`. The check `if (!activeTimer)` handles both `null` and `undefined`, so the widget will safely render idle. No crash will occur.
+
+**Mitigation:** The `if (!activeTimer)` guard in the `useEffect` and the `Boolean(activeTimer)` check in the render handle `undefined` gracefully. When Task 03 is complete, no changes are needed to Task 08's code.
+
+### Risk 2: Clock SVG icon renders at wrong size on mobile
+
+**Risk:** The current mobile timer placeholder is a plain `<span>` with no icon. After this change, the mobile location renders the full `<TimerWidget />` including the SVG clock. Inside `flex items-center space-x-3 sm:hidden`, the box may be slightly taller than before, potentially shifting the hamburger button.
+
+**Mitigation:** The `TimerWidget` uses `py-1.5` padding (same as desktop). The mobile container already uses `flex items-center` which centers vertically. Visual regression is minimal. If needed, a reviewer can apply `sm:hidden` responsive variants or reduce padding for mobile in a follow-up.
+
+### Risk 3: `setInterval` firing after component unmount
+
+**Risk:** If `TimerWidget` unmounts (e.g., full page navigation away from an Inertia-rendered page) while the interval is running, a memory leak or state update on an unmounted component warning could occur.
+
+**Mitigation:** The `useEffect` cleanup function `return () => clearInterval(id)` runs on unmount, clearing the interval. React 19 enforces this strictly, so the cleanup is sufficient.
+
+### Risk 4: `started_at` value from server is in the future (clock skew)
+
+**Risk:** If the server clock is ahead of the client clock, `Date.now() - startMs` will be negative. `formatElapsed` would compute a negative `totalSeconds`, producing a negative display like `-00:00:01`.
+
+**Mitigation:** Add `Math.max(0, ms)` inside `formatElapsed`:
+
+```js
+function formatElapsed(ms) {
+    const totalSeconds = Math.floor(Math.max(0, ms) / 1000);
+    ...
 }
 ```
 
-Using a domain-specific list mixed with faker prevents meaningless values like "Reprehenderit Category".
+This clamps negative elapsed time to zero, showing `00:00:00` until the clocks align.
 
-### MaterialFactory
+---
 
-```php
-use App\Enums\MaterialUnit;
-
-public function definition(): array
-{
-    return [
-        'category_id'         => null, // use withCategory() state
-        'name'                => fake()->words(3, true),
-        'sku'                 => fake()->optional(0.6)->bothify('??-###-###'),
-        'description'         => fake()->optional(0.5)->sentence(),
-        'unit'                => fake()->randomElement(MaterialUnit::cases())->value,
-        'quantity_on_hand'    => fake()->randomFloat(2, 0, 50),
-        'low_stock_threshold' => fake()->optional(0.7)->randomFloat(2, 1, 10),
-        'unit_cost'           => fake()->optional(0.8)->randomFloat(2, 10, 500),
-        'supplier_id'         => null,
-        'location'            => fake()->optional(0.6)->bothify('Rack ?, Shelf #'),
-        'notes'               => fake()->optional(0.3)->sentence(),
-    ];
-}
-
-public function withCategory(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'category_id' => MaterialCategory::factory(),
-    ]);
-}
-
-public function withSupplier(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'supplier_id' => Supplier::factory(),
-    ]);
-}
-
-public function lowStock(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'quantity_on_hand'    => fake()->randomFloat(2, 0, 2),
-        'low_stock_threshold' => 5.0,
-    ]);
-}
-```
-
-### ProjectMaterialFactory
-
-`ProjectMaterial` extends `Pivot` and represents the join between a project and a material. Its factory must create both parent models.
-
-```php
-public function definition(): array
-{
-    return [
-        'project_id'    => Project::factory(),
-        'material_id'   => Material::factory(),
-        'quantity_used' => fake()->randomFloat(2, 0.5, 20),
-        'cost_at_time'  => fake()->optional(0.7)->randomFloat(2, 10, 500),
-        'notes'         => fake()->optional(0.3)->sentence(),
-    ];
-}
-```
-
-`ProjectMaterial::factory()->create()` will create a new Project and a new Material. To attach to existing models:
-
-```php
-ProjectMaterial::factory()->create([
-    'project_id'  => $project->id,
-    'material_id' => $material->id,
-]);
-```
-
-### SupplierFactory
-
-```php
-public function definition(): array
-{
-    $suppliers = ['Rockler', 'Woodcraft', 'Home Depot', 'Lowe\'s', 'Lee Valley', 'Amazon', 'Local Hardwood Dealer'];
-
-    return [
-        'name'         => fake()->randomElement($suppliers) . ' ' . fake()->city(),
-        'contact_name' => fake()->optional(0.5)->name(),
-        'phone'        => fake()->optional(0.6)->phoneNumber(),
-        'email'        => fake()->optional(0.5)->safeEmail(),
-        'website'      => fake()->optional(0.6)->url(),
-        'address'      => fake()->optional(0.5)->address(),
-        'notes'        => fake()->optional(0.3)->sentence(),
-    ];
-}
-```
-
-### ToolCategoryFactory
-
-```php
-public function definition(): array
-{
-    $categories = ['Power Tools', 'Hand Tools', 'Jigs', 'Dust Collection', 'Measuring', 'Finishing'];
-
-    return [
-        'name'       => fake()->randomElement($categories) . ' ' . fake()->word(),
-        'sort_order' => fake()->numberBetween(0, 10),
-    ];
-}
-```
-
-### ToolFactory
-
-```php
-public function definition(): array
-{
-    $brands = ['DeWalt', 'Festool', 'Bosch', 'Makita', 'Jet', 'Powermatic', 'Lie-Nielsen', 'Veritas'];
-    $tools  = ['Table Saw', 'Planer', 'Jointer', 'Band Saw', 'Router', 'Drill Press', 'Sander', 'Miter Saw'];
-
-    return [
-        'category_id'       => null,
-        'name'              => fake()->randomElement($brands) . ' ' . fake()->randomElement($tools),
-        'brand'             => fake()->optional(0.9)->randomElement($brands),
-        'model_number'      => fake()->optional(0.8)->bothify('??-####'),
-        'serial_number'     => fake()->optional(0.6)->bothify('??###???##'),
-        'purchase_date'     => fake()->optional(0.7)->dateTimeBetween('-5 years', 'now'),
-        'purchase_price'    => fake()->optional(0.7)->randomFloat(2, 10, 500),
-        'warranty_expires'  => fake()->optional(0.5)->dateTimeBetween('now', '+3 years'),
-        'location'          => fake()->optional(0.7)->bothify('Bay ?, Station #'),
-        'manual_url'        => fake()->optional(0.4)->url(),
-        'notes'             => fake()->optional(0.3)->sentence(),
-        'total_usage_hours' => fake()->randomFloat(2, 0, 500),
-    ];
-}
-
-public function withCategory(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'category_id' => ToolCategory::factory(),
-    ]);
-}
-```
-
-### MaintenanceScheduleFactory
-
-```php
-use App\Enums\MaintenanceType;
-
-public function definition(): array
-{
-    return [
-        'tool_id'           => Tool::factory(),
-        'task'              => fake()->sentence(4),
-        'maintenance_type'  => fake()->randomElement(MaintenanceType::cases())->value,
-        'interval_hours'    => fake()->optional(0.5)->numberBetween(10, 200),
-        'interval_days'     => fake()->optional(0.5)->numberBetween(30, 365),
-        'last_performed_at' => fake()->optional(0.6)->dateTimeBetween('-6 months', 'now'),
-        'next_due_at'       => fake()->optional(0.6)->dateTimeBetween('now', '+6 months'),
-        'notes'             => fake()->optional(0.3)->sentence(),
-    ];
-}
-```
-
-### MaintenanceLogFactory
-
-```php
-use App\Enums\MaintenanceType;
-
-public function definition(): array
-{
-    return [
-        'tool_id'          => Tool::factory(),
-        'schedule_id'      => null, // nullable — ad-hoc maintenance has no schedule
-        'maintenance_type' => fake()->randomElement(MaintenanceType::cases())->value,
-        'description'      => fake()->paragraph(),
-        'cost'             => fake()->optional(0.5)->randomFloat(2, 10, 500),
-        'performed_at'     => fake()->dateTimeBetween('-1 year', 'now'),
-        'usage_hours_at'   => fake()->optional(0.5)->randomFloat(2, 0, 500),
-    ];
-}
-
-public function withSchedule(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'schedule_id' => MaintenanceSchedule::factory()->state([
-            'tool_id' => $attributes['tool_id'],
-        ]),
-    ]);
-}
-```
-
-`schedule_id` defaults to `null` per the spec (ad-hoc maintenance). The `withSchedule()` state links to a schedule on the same tool.
-
-### ExpenseFactory
-
-```php
-use App\Enums\ExpenseCategory;
-
-public function definition(): array
-{
-    return [
-        'project_id'   => null,
-        'category'     => fake()->randomElement(ExpenseCategory::cases())->value,
-        'description'  => fake()->sentence(5),
-        'amount'       => fake()->randomFloat(2, 10, 500),
-        'supplier_id'  => null,
-        'receipt_path' => null,
-        'expense_date' => fake()->dateTimeBetween('-1 year', 'now'),
-    ];
-}
-
-public function forProject(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'project_id' => Project::factory(),
-    ]);
-}
-
-public function withSupplier(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'supplier_id' => Supplier::factory(),
-    ]);
-}
-```
-
-### RevenueFactory
-
-```php
-public function definition(): array
-{
-    $paymentMethods = ['cash', 'check', 'venmo', 'paypal', 'zelle', 'bank transfer'];
-
-    return [
-        'project_id'     => null,
-        'description'    => fake()->sentence(5),
-        'amount'         => fake()->randomFloat(2, 10, 500),
-        'payment_method' => fake()->optional(0.7)->randomElement($paymentMethods),
-        'received_date'  => fake()->dateTimeBetween('-1 year', 'now'),
-        'client_name'    => fake()->optional(0.5)->name(),
-    ];
-}
-
-public function forProject(): static
-{
-    return $this->state(fn (array $attributes) => [
-        'project_id' => Project::factory(),
-    ]);
-}
-```
-
-### CutListBoardFactory
-
-```php
-public function definition(): array
-{
-    return [
-        'project_id'  => null,
-        'material_id' => null,
-        'label'       => 'Board #' . fake()->numberBetween(1, 100),
-        'length'      => fake()->randomFloat(2, 24, 120), // inches
-        'width'       => fake()->randomFloat(2, 3, 12),   // inches
-        'thickness'   => fake()->randomElement([0.75, 1.0, 1.5, 1.75, 2.0]),
-        'quantity'    => fake()->numberBetween(1, 5),
-    ];
-}
-```
-
-Thickness values use realistic woodworking dimensions (3/4", 1", 1-1/2", etc.) rather than fully random values.
-
-### CutListPieceFactory
-
-```php
-public function definition(): array
-{
-    $labels = ['Front Panel', 'Back Panel', 'Side Panel A', 'Side Panel B', 'Shelf', 'Door', 'Drawer Front', 'Bottom'];
-
-    return [
-        'project_id'     => Project::factory(),
-        'label'          => fake()->randomElement($labels) . ' ' . fake()->numberBetween(1, 10),
-        'length'         => fake()->randomFloat(2, 6, 48),
-        'width'          => fake()->randomFloat(2, 3, 12),
-        'thickness'      => fake()->randomElement([0.75, 1.0, 1.5, 1.75, 2.0]),
-        'quantity'       => fake()->numberBetween(1, 4),
-        'grain_direction'=> fake()->boolean(30),
-    ];
-}
-```
-
-### TagFactory
-
-```php
-public function definition(): array
-{
-    $tagNames = ['commission', 'gift', 'prototype', 'shop improvement', 'furniture', 'storage', 'jig', 'holiday'];
-
-    return [
-        'name'  => fake()->randomElement($tagNames) . ' ' . fake()->word(),
-        'color' => sprintf('#%06x', fake()->numberBetween(0, 0xFFFFFF)),
-    ];
-}
-```
-
-`sprintf('#%06x', ...)` produces a 7-character lowercase hex color like `#a3f2c1`. This is the most reliable approach — `fake()->hexColor()` sometimes returns values without the `#` prefix depending on Faker version. The `sprintf` approach is deterministic and always produces a valid 7-char hex.
-
-## 4. Key Decisions
-
-### Decision 1: Nullable FKs default to `null` in definitions, use factory states for FK creation
-
-All nullable foreign keys (`category_id`, `supplier_id`, `project_id`, etc.) default to `null` in the base `definition()`. This means `Model::factory()->make()` works without hitting the database or creating parent models. When tests need the relationship populated, they use factory states: `Material::factory()->withCategory()->create()`.
-
-This is the correct Factory pattern for relationships with nullable FKs. It prevents cascading factory creation that is hard to reason about and slows tests.
-
-### Decision 2: Required FKs use `ModelName::factory()` as the default value
-
-For required (non-nullable) FK columns — `project_id` on `ProjectNote`, `ProjectPhoto`, `TimeEntry`, `CutListPiece`; `tool_id` on `MaintenanceSchedule`, `MaintenanceLog` — the factory definition uses `Project::factory()` as the default. Laravel resolves this by creating a new parent model when `create()` is called.
-
-For `make()` calls (no DB), nested `factory()` calls in the definition will resolve to `make()` as well — no DB interaction occurs.
-
-### Decision 3: `ProjectMaterial` factory creates independent parent models
-
-`ProjectMaterial` is a Pivot model. Its factory creates independent `Project` and `Material` records by default. Tests that want to assert a specific project-material association must pass the IDs explicitly or use `->for($project)->for($material)`.
-
-### Decision 4: Money fields use `randomFloat(2, 10, 500)`
-
-The range [10, 500] produces realistic values for a woodworking shop context. The task manifest specifies this exact Faker call. All money columns across all factories use this range consistently.
-
-### Decision 5: `FactoryTest.php` uses `make()` not `create()`
-
-The smoke test calls `make()` on every factory to verify syntactic correctness without requiring a database connection. A separate integration test (not in scope for this task) would verify `create()` works on a migrated database. This keeps the smoke test runnable in CI without database setup.
-
-```php
-// tests/Unit/FactoryTest.php
-use App\Models\{Project, ProjectPhoto, ProjectNote, TimeEntry, Material, MaterialCategory,
-                ProjectMaterial, Supplier, Tool, ToolCategory, MaintenanceSchedule,
-                MaintenanceLog, Expense, Revenue, CutListBoard, CutListPiece, Tag};
-
-it('all factories produce valid data with make()', function () {
-    expect(Project::factory()->make())->toBeInstanceOf(Project::class);
-    expect(ProjectPhoto::factory()->make())->toBeInstanceOf(ProjectPhoto::class);
-    // ... all 17 models
-    expect(Tag::factory()->make()->color)->toMatch('/#[0-9a-f]{6}/i');
-});
-```
-
-### Decision 6: Enum column values use `->value` on enum cases
-
-`fake()->randomElement(ProjectStatus::cases())` returns a `ProjectStatus` enum instance. Calling `->value` on it returns the string backing value (e.g., `'in_progress'`). This string is what gets stored in the database column. Without `->value`, Eloquent would receive an enum object, which it would cast correctly — but having the string in the factory definition is cleaner and avoids cast-related surprises during testing.
-
-### Decision 7: Tag color format
-
-`sprintf('#%06x', fake()->numberBetween(0, 0xFFFFFF))` guarantees:
-- Always starts with `#`
-- Always exactly 6 hex digits after `#`
-- Lowercase hex (consistent with the spec example `#ffffff`)
-- Pattern matches `/#[0-9a-f]{6}/i`
-
-## 5. Verified Dependencies
-
-| Dependency | Source | Notes |
-|------------|--------|-------|
-| All 17 model classes with `HasUlids` and `$fillable` | Task 04 | Factories reference model classes directly |
-| `App\Enums\*` enum classes with `cases()` | Task 02 | Used in `randomElement(EnumClass::cases())` |
-| All 17+ database tables migrated | Task 03 | Required for `create()` to work |
-| `Project::booted()` slug generation | Task 04 | `ProjectFactory` relies on this to set `slug` automatically |
-| `faker/faker` library | Laravel default | Included in `laravel/framework` dev dependencies |
-
-## 6. Risks
-
-### Risk 1: `Project::booted()` slug observer not implemented in Task 04
-
-If `Project` does not auto-generate `slug` from `title`, `Project::factory()->create()` will fail with a NOT NULL constraint violation on `slug`.
-
-**Mitigation:** Add a check in `FactoryTest` that confirms `Project::factory()->create()->slug` is not null. If the observer is missing, the factory can be patched with a temporary `'slug' => Str::slug(fake()->sentence(3))` line, flagged for removal once Task 04 is corrected.
-
-### Risk 2: `ProjectMaterial` extends `Pivot` — factory behavior differs
-
-`Pivot` models behave slightly differently from `Model` in factories. In particular, `Pivot` models do not fire the same lifecycle events, and `HasFactory` trait must be explicitly added.
-
-**Mitigation:** Ensure `ProjectMaterial` has the `HasFactory` trait. The factory class must specify `protected $model = ProjectMaterial::class`. Test with `ProjectMaterial::factory()->make()` in `FactoryTest`.
-
-### Risk 3: Faker `optional()` produces `null` for required fields in some paths
-
-`fake()->optional(0.7)->randomFloat(...)` returns `null` 30% of the time. For fields that are nullable in the schema but are expected to have a value in most test scenarios, `optional()` usage may cause flaky tests.
-
-**Mitigation:** Use `optional()` only for truly nullable schema columns. For fields like `unit` (required in `materials` table), do NOT use `optional()`.
-
-### Risk 4: `TimeEntryFactory` `duration_minutes` calculation may be off by a minute due to Carbon vs DateTime
-
-The inline calculation in the factory definition uses PHP `DateTime` objects. When the model's `saving` observer uses Carbon's `diffInMinutes()`, slight differences in rounding may produce results that differ by 1 minute.
-
-**Mitigation:** Tests asserting on `duration_minutes` should use `->toBeBetween($expected - 1, $expected + 1)` rather than exact equality.
-
-### Risk 5: `MaintenanceLog::withSchedule()` state creates a schedule on a potentially different tool
-
-The `withSchedule()` state creates a `MaintenanceSchedule::factory()->state(['tool_id' => $attributes['tool_id']])`. This requires that `$attributes['tool_id']` is already resolved to an ID (a ULID string), not a nested factory. If both are factories, the `tool_id` in `$attributes` is still a factory object, not a string ID.
-
-**Mitigation:** Document that `withSchedule()` should only be used after `create()` or with an explicit `tool_id` state. For tests that need both, create the `Tool` first and pass its ID explicitly.
-
-## 7. Acceptance Criteria Coverage
+## 10. Acceptance Criteria Coverage
 
 | Criterion | How Met |
 |-----------|---------|
-| All 17 factory files exist under `database/factories/` | 17 files enumerated in Files to Create |
-| `ModelName::factory()->make()` works for every model | `FactoryTest.php` smoke test verifies this for all 17 models |
-| `ModelName::factory()->create()` works on a migrated database | FK defaults use nested factory calls; required FKs auto-create parents |
-| Enum columns produce valid string values matching their enum's cases | `fake()->randomElement(EnumClass::cases())->value` pattern used throughout |
-| Money/decimal fields produce positive numeric values | `fake()->randomFloat(2, 10, 500)` used for all money columns |
-| `Tag` factory produces a `color` matching `/#[0-9a-f]{6}/i` | `sprintf('#%06x', fake()->numberBetween(0, 0xFFFFFF))` pattern |
-| `Project` factory creates a record with auto-generated slug (not null) | `slug` intentionally omitted from factory; model observer generates it |
-| `php artisan test --filter FactoryTest` passes | `tests/Unit/FactoryTest.php` calls `make()` for all 17 models |
+| Read `activeTimer` from `usePage().props.activeTimer` | `TimerWidget` calls `const { activeTimer } = usePage().props` |
+| When null: display 00:00:00 in gray, non-interactive | `isRunning = false` branch renders a `<div>` with gray text |
+| When set: tick up every second using setInterval/useEffect | `useEffect` with `setInterval(1000)` computing `Date.now() - startMs` |
+| Compute from `activeTimer.started_at` | `const startMs = new Date(activeTimer.started_at).getTime()` |
+| Format HH:MM:SS | `formatElapsed(ms)` with `padStart(2, '0')` and join with `:` |
+| Amber color when running | `text-amber-700`, `border-amber-300`, `bg-amber-50` on running button |
+| Clicking while running navigates to project | `router.visit('/projects/' + activeTimer.project_slug)` in `onClick` |
+| setInterval cleared on null/unmount | `useEffect` returns `() => clearInterval(id)` |
+| Works in both desktop and mobile locations | Both locations replaced with `<TimerWidget />` |
+| No extra npm packages | Only `useState`, `useEffect` (React), `usePage`, `router` (Inertia) |
