@@ -60,6 +60,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/finance', [FinanceController::class, 'index'])->name('finance.index');
     Route::post('/finance/expenses', [FinanceController::class, 'storeExpense'])->name('finance.store-expense');
     Route::post('/finance/revenues', [FinanceController::class, 'storeRevenue'])->name('finance.store-revenue');
+    Route::delete('/finance/expenses/{expense}', [FinanceController::class, 'destroyExpense'])->name('finance.destroy-expense');
+    Route::delete('/finance/revenues/{revenue}', [FinanceController::class, 'destroyRevenue'])->name('finance.destroy-revenue');
 
     // Cut List
     Route::get('/cut-list', [CutListController::class, 'index'])->name('cut-list.index');
